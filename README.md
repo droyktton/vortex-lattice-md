@@ -127,13 +127,16 @@ files to work with:
 
 ```sh
 ./vortex_sim --steps 500 --print-interval 10
-python3 msd.py                                     # every snapshot as a time origin, full window
-python3 msd.py --window 20 --origin-spacing 5       # fixed 20-snapshot window, origins every 5 snapshots
+python3 msd.py                                                 # every snapshot as a time origin, full window
+python3 msd.py --window 20 --origin-spacing 5                   # fixed 20-snapshot window, origins every 5 snapshots
+python3 msd.py --window 20 --origin-spacing 5 --t0-min 10       # ...and skip the first 10 snapshots (equilibration)
 ```
 
 Computes MSD(Δt) = ⟨[r(t₀+Δt) − r(t₀)]²⟩, averaged over every vortex and over
-equally spaced reference times t₀ within a fixed window (the standard
-multiple-time-origins trick for better statistics from one trajectory).
+equally spaced reference times t₀ (starting no earlier than `--t0-min`
+snapshots in, to leave out the initial equilibration transient) within a
+fixed window (the standard multiple-time-origins trick for better statistics
+from one trajectory).
 Positions are unwrapped across time (minimum image between consecutive
 snapshots) so a vortex crossing the periodic boundary doesn't register as a
 huge jump — this assumes true displacement between consecutive *saved*

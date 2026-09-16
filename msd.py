@@ -76,17 +76,19 @@ def unwrap_trajectory(xs, ys, Lx, Ly):
     return ux, uy
 
 
-def compute_msd(ux, uy, origin_spacing, window):
+def compute_msd(ux, uy, origin_spacing, window, t0_min=0):
     """<[r(t0+lag) - r(t0)]^2>, averaged over particles and over equally
-    spaced reference times t0 within a fixed window of `window` snapshots."""
+    spaced reference times t0 (starting no earlier than snapshot `t0_min`,
+    to skip the initial equilibration transient) within a fixed window of
+    `window` snapshots."""
     Nt = ux.shape[0]
-    if window is None or window >= Nt:
-        window = Nt - 1
+    if window is None or window >= Nt - t0_min:
+        window = Nt - 1 - t0_min
 
-    origins = list(range(0, Nt - window, origin_spacing))
+    origins = list(range(t0_min, Nt - window, origin_spacing))
     if not origins:
-        origins = [0]
-        window = Nt - 1
+        origins = [t0_min]
+        window = Nt - 1 - t0_min
 
     lags = np.arange(0, window + 1)
     msd = np.zeros(len(lags))
@@ -121,6 +123,9 @@ def main():
                         help='spacing between reference times t0, in snapshots (default 1: every snapshot is an origin)')
     parser.add_argument('--window', type=int, default=None,
                         help='max lag per origin, in snapshots (default: as large as the data allows)')
+    parser.add_argument('--t0-min', type=int, default=0,
+                        help='skip this many snapshots before the first allowed reference time t0 '
+                             '(default 0); use it to discard the initial equilibration transient')
     parser.add_argument('--out-prefix', default=None,
                         help='output file prefix (default: msd, next to the snapshots)')
     parser.add_argument('--show', action='store_true', help='also open an interactive window')
@@ -141,10 +146,15 @@ def main():
         print("Warning: could not read Box Size Lx/Ly from a sibling simulation.log; "
               "displacements will not be unwrapped across the periodic boundary.")
 
+    if args.t0_min >= len(snaps) - 1:
+        print(f"Error: --t0-min {args.t0_min} leaves fewer than 2 snapshots "
+              f"({len(snaps)} available); reduce it.")
+        sys.exit(1)
+
     xs, ys = load_trajectory(snaps)
     ux, uy = unwrap_trajectory(xs, ys, Lx, Ly)
 
-    lags, msd, origins = compute_msd(ux, uy, args.origin_spacing, args.window)
+    lags, msd, origins = compute_msd(ux, uy, args.origin_spacing, args.window, args.t0_min)
     print(f"{len(origins)} time origin(s), window {lags[-1]} snapshots")
 
     lag_steps = lags * spacing
