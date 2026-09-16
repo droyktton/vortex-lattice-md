@@ -1,0 +1,15 @@
+# Build artifacts
+vortex_sim
+vortex_sim_on2
+
+# Simulation output
+configIni.dat
+config_step_*.dat
+simulation.log
+
+# Generated plots
+*.png
+
+# Python
+__pycache__/
+*.pyc
