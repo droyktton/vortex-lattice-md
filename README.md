@@ -77,6 +77,23 @@ periodic snapshots `config_step_<N>.dat`: position, force, and identity of
 every vortex, saved every `--print-interval` steps plus always the last one
 (`config_step_<steps-1>.dat`).
 
+## Which analysis do I run?
+
+Every measurement is a separate Python script over the `.dat` files
+`vortex_sim` already writes — nothing to enable in the simulation itself,
+except that a couple of them need a *trajectory* (several evenly spaced
+snapshots) rather than just one:
+
+| I want to see...                  | Script         | Needs                          |
+|------------------------------------|----------------|---------------------------------|
+| The lattice / flux lines           | `vizconfig.py` | one snapshot                    |
+| Positional order: g(r), S(k)       | `analyze.py`   | one snapshot                    |
+| Diffusion: MSD vs t                | `msd.py`       | a trajectory (small `--print-interval`) |
+
+For a trajectory, run with a small `--print-interval` so there are enough
+`config_step_*.dat` files to work with, e.g. `./vortex_sim --steps 500
+--print-interval 10`. Details and full flag lists for each script are below.
+
 ## Visualize
 
 ```sh
@@ -103,8 +120,7 @@ python3 analyze.py config_step_499.dat
 python3 analyze.py config_step_499.dat --dr 0.02 --kmax 15 --kres 301 --show
 ```
 
-Computes, per layer,
-the 2D radial distribution function g(r) and the structure factor
+Computes, per layer, the 2D radial distribution function g(r) and the structure factor
 S(k) = |Σⱼ exp(-i k·rⱼ)|²/N (periodic minimum image, no time averaging), then
 averages both over the z-stack. Produces:
 
@@ -120,10 +136,6 @@ from `simulation.log`); `--kres` (grid points per k-axis) trades runtime for
 resolution — the direct summation is O(kres² × N) per layer.
 
 ## Analyze (mean squared displacement)
-
-Needs a trajectory, not a single snapshot — run with a small
-`--print-interval` so there are enough evenly spaced `config_step_*.dat`
-files to work with:
 
 ```sh
 ./vortex_sim --steps 500 --print-interval 10
