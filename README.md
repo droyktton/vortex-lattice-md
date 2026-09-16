@@ -96,6 +96,29 @@ Requires `pandas` and `matplotlib`. Produces:
 periodic unwrapping, so lines anchored near a box edge can show a spurious
 diagonal jump).
 
+## Analyze (g(r), S(k))
+
+```sh
+python3 analyze.py config_step_499.dat
+python3 analyze.py config_step_499.dat --dr 0.02 --kmax 15 --kres 301 --show
+```
+
+Requires `scipy` in addition to `pandas`/`matplotlib`. Computes, per layer,
+the 2D radial distribution function g(r) and the structure factor
+S(k) = |Σⱼ exp(-i k·rⱼ)|²/N (periodic minimum image, no time averaging), then
+averages both over the z-stack. Produces:
+
+- `<name>_gr.png` — g(r); a crystalline lattice shows persistent oscillations
+  around 1, not the decay of a liquid.
+- `<name>_sk.png` — S(kx, ky) on a log color scale (k=0 masked, since it's a
+  trivial peak equal to N); a triangular lattice shows hexagonal rings of
+  Bragg-like peaks. Speckle in the background reflects the small number of
+  z-layers being averaged (no time averaging is done).
+
+`--kmax` defaults to about 4 reciprocal lattice shells based on `a0` (read
+from `simulation.log`); `--kres` (grid points per k-axis) trades runtime for
+resolution — the direct summation is O(kres² × N) per layer.
+
 ## End-to-end example
 
 ```sh
@@ -113,4 +136,5 @@ python3 vizconfig.py config_step_999.dat --show
 - `main.cu` — the simulation
 - `Makefile` — build targets
 - `vizconfig.py` — visualization
+- `analyze.py` — g(r) and S(k), z-averaged
 - `verlattice.gnu` — gnuplot alternative
