@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <string>
 #include <chrono>
+#include <stdexcept>
 
 // ============================================================================
 // CONFIGURATION: Set to 0 for O(N^2) Direct Force or 1 for O(N) Cell List
@@ -528,28 +529,100 @@ void writeSimulationLog(
 }
 
 // ============================================================================
+// Command-line parameters
+// ============================================================================
 
-int main() {
-    // --- Simulation Settings ---
+struct SimParams {
     int Nx = 20, Ny = 20, Nz = 4;
-    int Nxy = Nx * Ny;
-    int Nmax = Nxy * Nz;
     float a0 = 1.0f;
     float k_spring = 0.5f;
     float T = 0.01f;
     float dt = 0.01f;
     int steps = 500;
+    float cutoff = 3.0f;
+    float skin = 0.5f;
+    unsigned long long seed = 1234567ULL;
+    int print_interval = 100;
+};
+
+void printUsage(const char* prog) {
+    std::cout <<
+        "Usage: " << prog << " [options]\n"
+        "  --nx N              in-plane lattice width          (default 20)\n"
+        "  --ny N              in-plane lattice height         (default 20)\n"
+        "  --nz N              number of layers                (default 4)\n"
+        "  --a0 F              lattice constant                (default 1.0)\n"
+        "  --k F               inter-layer spring constant     (default 0.5)\n"
+        "  --T F               temperature                     (default 0.01)\n"
+        "  --dt F              timestep                        (default 0.01)\n"
+        "  --steps N           number of integration steps     (default 500)\n"
+        "  --cutoff F          interaction cutoff radius       (default 3.0)\n"
+        "  --skin F            Verlet skin width                (default 0.5)\n"
+        "  --seed N            RNG seed                        (default 1234567)\n"
+        "  --print-interval N  steps between snapshot writes   (default 100)\n"
+        "  -h, --help          show this message\n";
+}
+
+// Returns 0 to proceed, 1 to exit successfully (help shown), -1 on bad input.
+int parseArgs(int argc, char** argv, SimParams& p) {
+    try {
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            auto next = [&]() -> std::string {
+                if (i + 1 >= argc) throw std::invalid_argument("missing value for " + arg);
+                return argv[++i];
+            };
+
+            if (arg == "-h" || arg == "--help") { printUsage(argv[0]); return 1; }
+            else if (arg == "--nx") p.Nx = std::stoi(next());
+            else if (arg == "--ny") p.Ny = std::stoi(next());
+            else if (arg == "--nz") p.Nz = std::stoi(next());
+            else if (arg == "--a0") p.a0 = std::stof(next());
+            else if (arg == "--k") p.k_spring = std::stof(next());
+            else if (arg == "--T") p.T = std::stof(next());
+            else if (arg == "--dt") p.dt = std::stof(next());
+            else if (arg == "--steps") p.steps = std::stoi(next());
+            else if (arg == "--cutoff") p.cutoff = std::stof(next());
+            else if (arg == "--skin") p.skin = std::stof(next());
+            else if (arg == "--seed") p.seed = std::stoull(next());
+            else if (arg == "--print-interval") p.print_interval = std::stoi(next());
+            else throw std::invalid_argument("unknown option " + arg);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        printUsage(argv[0]);
+        return -1;
+    }
+    return 0;
+}
+
+// ============================================================================
+
+int main(int argc, char** argv) {
+    SimParams p;
+    int parse_rc = parseArgs(argc, argv, p);
+    if (parse_rc != 0) return parse_rc > 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+
+    // --- Simulation Settings ---
+    int Nx = p.Nx, Ny = p.Ny, Nz = p.Nz;
+    int Nxy = Nx * Ny;
+    int Nmax = Nxy * Nz;
+    float a0 = p.a0;
+    float k_spring = p.k_spring;
+    float T = p.T;
+    float dt = p.dt;
+    int steps = p.steps;
 
     // Absolute interaction range, in the same length units as the box.
     // Deliberately NOT tied to a0: changing the lattice constant changes the
     // density, not the range of the interaction.
-    float cutoff = 3.0f;
+    float cutoff = p.cutoff;
 
     // Verlet skin: the cell-list mesh is built cutoff+skin wide so the list
     // stays a valid superset of the true neighbors for several steps. It is
     // rebuilt only once some particle has drifted more than skin/2 since the
     // last build (see the Verlet-skin cell list section above).
-    float skin = 0.5f;
+    float skin = p.skin;
     float cutoff_skin = cutoff + skin;
     float skin_half_sq = (skin * 0.5f) * (skin * 0.5f);
 
@@ -712,13 +785,12 @@ int main() {
                 s2Tdt,
                 Lx,
                 Ly,
-                1234567ULL,
+                p.seed,
                 static_cast<unsigned long long>(step)
             }
         );
 
-        int print_interval = 100;
-        if (step % print_interval == 0 || step == steps - 1) {
+        if (step % p.print_interval == 0 || step == steps - 1) {
             std::string out_name = "config_step_" + std::to_string(step) + ".dat";
             printConfiguration(out_name, step, T, Nmax, Nxy,
                                posx, posy, posz, fx, fy, which_vortex_is, cell_ids);

@@ -50,8 +50,14 @@ make RANDOM123_DIR=/path/to/random123/include
 ## Run
 
 ```sh
-./vortex_sim
+./vortex_sim                                   # defaults
+./vortex_sim --nx 40 --ny 40 --T 0.05 --steps 2000
+./vortex_sim --help                            # list all options
 ```
+
+All physical and run parameters have defaults and can be overridden on the
+command line: `--nx`, `--ny`, `--nz`, `--a0`, `--k`, `--T`, `--dt`, `--steps`,
+`--cutoff`, `--skin`, `--seed`, `--print-interval`.
 
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
