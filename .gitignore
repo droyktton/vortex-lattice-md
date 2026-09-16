@@ -6,6 +6,7 @@ vortex_sim_on2
 configIni.dat
 config_step_*.dat
 simulation.log
+msd.dat
 
 # Generated plots
 *.png
