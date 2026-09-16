@@ -24,18 +24,25 @@ def load_config(filename):
     return df
 
 
-def find_box_size(filename):
-    """Read Lx, Ly from the simulation.log next to this config file, so
-    inter-layer segments can be unwrapped across the periodic x/y boundary."""
+def find_log_value(filename, label):
+    """Read a `label : value` line from the simulation.log next to this
+    config file (shared by all the analysis/visualization scripts)."""
     log_path = os.path.join(os.path.dirname(os.path.abspath(filename)), 'simulation.log')
     if not os.path.exists(log_path):
-        return None, None
+        return None
     text = open(log_path).read()
-    mx = re.search(r'Box Size Lx\s*:\s*([0-9.eE+-]+)', text)
-    my = re.search(r'Box Size Ly\s*:\s*([0-9.eE+-]+)', text)
-    if mx and my:
-        return float(mx.group(1)), float(my.group(1))
-    return None, None
+    m = re.search(re.escape(label) + r'\s*:\s*([0-9.eE+-]+)', text)
+    return float(m.group(1)) if m else None
+
+
+def find_box_size(filename):
+    """Read Lx, Ly, so inter-layer segments can be unwrapped across the
+    periodic x/y boundary."""
+    Lx = find_log_value(filename, 'Box Size Lx')
+    Ly = find_log_value(filename, 'Box Size Ly')
+    if Lx is None or Ly is None:
+        return None, None
+    return Lx, Ly
 
 
 def unwrap_along_z(xs, ys, Lx, Ly):

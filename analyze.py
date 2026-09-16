@@ -1,6 +1,5 @@
 import sys
 import os
-import re
 import argparse
 
 import numpy as np
@@ -8,18 +7,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
-from vizconfig import load_config, find_box_size
-
-
-def find_a0(filename):
-    """Read the lattice constant a0 from the sibling simulation.log, used only
-    to pick sensible default ranges for g(r) and S(k)."""
-    log_path = os.path.join(os.path.dirname(os.path.abspath(filename)), 'simulation.log')
-    if not os.path.exists(log_path):
-        return None
-    text = open(log_path).read()
-    m = re.search(r'Lattice Constant \(a0\)\s*:\s*([0-9.eE+-]+)', text)
-    return float(m.group(1)) if m else None
+from vizconfig import load_config, find_box_size, find_log_value
 
 
 def compute_gr_layer(x, y, Lx, Ly, dr, r_max):
@@ -118,7 +106,7 @@ def main():
 
     r_max = args.rmax if args.rmax is not None else 0.5 * min(Lx, Ly)
 
-    a0 = find_a0(args.filename)
+    a0 = find_log_value(args.filename, 'Lattice Constant (a0)')
     if args.kmax is not None:
         k_max = args.kmax
     elif a0:

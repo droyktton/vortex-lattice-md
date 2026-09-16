@@ -103,7 +103,7 @@ python3 analyze.py config_step_499.dat
 python3 analyze.py config_step_499.dat --dr 0.02 --kmax 15 --kres 301 --show
 ```
 
-Requires `scipy` in addition to `pandas`/`matplotlib`. Computes, per layer,
+Computes, per layer,
 the 2D radial distribution function g(r) and the structure factor
 S(k) = |Σⱼ exp(-i k·rⱼ)|²/N (periodic minimum image, no time averaging), then
 averages both over the z-stack. Produces:
@@ -118,6 +118,30 @@ averages both over the z-stack. Produces:
 `--kmax` defaults to about 4 reciprocal lattice shells based on `a0` (read
 from `simulation.log`); `--kres` (grid points per k-axis) trades runtime for
 resolution — the direct summation is O(kres² × N) per layer.
+
+## Analyze (mean squared displacement)
+
+Needs a trajectory, not a single snapshot — run with a small
+`--print-interval` so there are enough evenly spaced `config_step_*.dat`
+files to work with:
+
+```sh
+./vortex_sim --steps 500 --print-interval 10
+python3 msd.py                                     # every snapshot as a time origin, full window
+python3 msd.py --window 20 --origin-spacing 5       # fixed 20-snapshot window, origins every 5 snapshots
+```
+
+Computes MSD(Δt) = ⟨[r(t₀+Δt) − r(t₀)]²⟩, averaged over every vortex and over
+equally spaced reference times t₀ within a fixed window (the standard
+multiple-time-origins trick for better statistics from one trajectory).
+Positions are unwrapped across time (minimum image between consecutive
+snapshots) so a vortex crossing the periodic boundary doesn't register as a
+huge jump — this assumes true displacement between consecutive *saved*
+snapshots stays under half the box, so don't set `--print-interval` too
+coarse relative to how fast the vortices actually move. Any trailing
+snapshot that breaks uniform step spacing (e.g. the always-saved final step)
+is dropped automatically. Produces `msd.dat` (two columns: t, MSD) and
+`msd.png`.
 
 ## End-to-end example
 
@@ -137,4 +161,5 @@ python3 vizconfig.py config_step_999.dat --show
 - `Makefile` — build targets
 - `vizconfig.py` — visualization
 - `analyze.py` — g(r) and S(k), z-averaged
+- `msd.py` — mean squared displacement vs time
 - `verlattice.gnu` — gnuplot alternative
