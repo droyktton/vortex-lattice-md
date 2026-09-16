@@ -55,13 +55,27 @@ make RANDOM123_DIR=/path/to/random123/include
 ./vortex_sim --help                            # list all options
 ```
 
-All physical and run parameters have defaults and can be overridden on the
-command line: `--nx`, `--ny`, `--nz`, `--a0`, `--k`, `--T`, `--dt`, `--steps`,
-`--cutoff`, `--skin`, `--seed`, `--print-interval`.
+Every physical and run parameter has a default and can be overridden on the
+command line:
+
+| Flag               | Meaning                        | Default   |
+|---------------------|---------------------------------|-----------|
+| `--nx`, `--ny`      | in-plane lattice size           | 20, 20    |
+| `--nz`              | number of layers                | 4         |
+| `--a0`              | lattice constant                | 1.0       |
+| `--k`               | inter-layer spring constant     | 0.5       |
+| `--T`               | temperature                     | 0.01      |
+| `--dt`              | timestep                        | 0.01      |
+| `--steps`           | number of integration steps     | 500       |
+| `--cutoff`          | interaction cutoff radius       | 3.0       |
+| `--skin`            | Verlet skin width                | 0.5       |
+| `--seed`            | RNG seed                        | 1234567   |
+| `--print-interval`  | steps between snapshot writes   | 100       |
 
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
-every vortex.
+every vortex, saved every `--print-interval` steps plus always the last one
+(`config_step_<steps-1>.dat`).
 
 ## Visualize
 
@@ -81,6 +95,18 @@ Requires `pandas` and `matplotlib`. Produces:
 `verlattice.gnu` is a lighter gnuplot alternative for a quick look (no
 periodic unwrapping, so lines anchored near a box edge can show a spurious
 diagonal jump).
+
+## End-to-end example
+
+```sh
+make
+./vortex_sim --nx 30 --ny 30 --nz 4 --steps 1000 --T 0.02 --print-interval 200
+python3 vizconfig.py config_step_999.dat --show
+```
+
+3600 flux lines (30×30×4), run at a higher temperature than the defaults —
+`config_step_999_3d.png` shows visibly more transverse wander than a
+`T=0.01` run.
 
 ## Files
 
