@@ -476,7 +476,7 @@ void writeSimulationLog(
     float a0, float Lx, float Ly,
     float k_spring, float T, float dt, int steps, float cutoff,
     int Ncx, int Ncy, int Ncxy, int Nc, float cut_offx, float cut_offy,
-    bool use_cell_list, float skin, float cutoff_skin
+    bool use_cell_list, float skin, float cutoff_skin, unsigned long long seed
 ) {
     std::ofstream log(filename);
     if (!log.is_open()) {
@@ -506,7 +506,8 @@ void writeSimulationLog(
     log << "Total Steps          : " << steps << "\n";
     log << "Spring Constant (k)  : " << k_spring << "\n";
     log << "Interaction Cutoff   : " << cutoff << "  (absolute, independent of a0)\n";
-    log << "Core Radius          : " << R_CORE << "\n\n";
+    log << "Core Radius          : " << R_CORE << "\n";
+    log << "RNG Seed             : " << seed << "\n\n";
 
     if (use_cell_list) {
         log << "[Cell List Mesh Parameters]\n";
@@ -529,6 +530,163 @@ void writeSimulationLog(
 }
 
 // ============================================================================
+// Restart / checkpoint
+//
+// The Philox RNG in LangevinStep is stateless -- keyed on (gid, step, seed),
+// not on any running state -- so resuming a run needs no RNG state at all,
+// just the physical state (positions, layers, identities) and the right
+// step number to continue counting from. A config_step_<N>.dat already has
+// everything needed for the former; the loop below supplies the latter.
+// ============================================================================
+
+// Extract N from a "config_step_<N>.dat" path (any directory prefix is
+// ignored), matching the same convention the Python tooling uses.
+bool parseStepFromFilename(const std::string& path, int& step) {
+    size_t slash = path.find_last_of("/\\");
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    const std::string prefix = "config_step_", suffix = ".dat";
+    if (base.size() <= prefix.size() + suffix.size()) return false;
+    if (base.compare(0, prefix.size(), prefix) != 0) return false;
+    if (base.compare(base.size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+    std::string digits = base.substr(prefix.size(), base.size() - prefix.size() - suffix.size());
+    if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) return false;
+    step = std::stoi(digits);
+    return true;
+}
+
+std::string baseName(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? path : path.substr(slash + 1);
+}
+
+std::string dirName(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? std::string(".") : path.substr(0, slash);
+}
+
+// Read a "label : value" line from a simulation.log, mirroring the Python
+// tooling's find_log_value(). Returns false if the file or label isn't found.
+bool findLogValue(const std::string& log_path, const std::string& label, double& value) {
+    std::ifstream in(log_path);
+    if (!in.is_open()) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t pos = line.find(label);
+        if (pos == std::string::npos) continue;
+        size_t colon = line.find(':', pos);
+        if (colon == std::string::npos) continue;
+        try {
+            value = std::stod(line.substr(colon + 1));
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Best-effort cross-check: nothing about --nx/--ny/--nz/--a0/--k/--T/--dt/
+// --cutoff/--skin/--seed is recoverable from the restart file's physical
+// state alone, so a mismatched value silently continues the trajectory
+// under different physics (or, for the seed, replays noise already used).
+// This warns (doesn't block) when the original run's own simulation.log
+// disagrees with the current invocation.
+void checkRestartConsistency(
+    const std::string& log_path, int Nmax, float a0, float k_spring,
+    float T, float dt, float cutoff, float skin, unsigned long long seed)
+{
+    std::ifstream test(log_path);
+    if (!test.is_open()) {
+        std::cerr << "Warning: no simulation.log found at " << log_path << "; cannot cross-check "
+                     "run parameters (--nx/--ny/--nz/--a0/--k/--T/--dt/--cutoff/--skin/--seed) "
+                     "against the original run.\n";
+        return;
+    }
+
+    struct Check { const char* label; double current; };
+    Check checks[] = {
+        {"Total Vortices (Nmax)", double(Nmax)},
+        {"Lattice Constant (a0)", double(a0)},
+        {"Spring Constant (k)",   double(k_spring)},
+        {"Temperature (T)",       double(T)},
+        {"Time Step (dt)",        double(dt)},
+        {"Interaction Cutoff",    double(cutoff)},
+        {"Skin",                  double(skin)},
+        {"RNG Seed",              double(seed)},
+    };
+
+    for (const auto& c : checks) {
+        double logged;
+        if (!findLogValue(log_path, c.label, logged)) continue;  // e.g. Skin absent in direct mode
+        double denom = std::fabs(logged) > 1e-12 ? std::fabs(logged) : 1.0;
+        if (std::fabs(logged - c.current) / denom > 1e-4) {
+            std::cerr << "Warning: " << c.label << " mismatch with the original run -- "
+                      << "log says " << logged << ", this invocation says " << c.current
+                      << ". Restarting with different physical parameters changes the "
+                         "trajectory you're continuing.\n";
+        }
+    }
+}
+
+// Load position/layer/identity state from a previously printed
+// config_step_N.dat (or configIni.dat) to resume a run. Forces aren't read
+// back -- they get recomputed fresh before the first restarted step anyway.
+bool loadConfiguration(
+    const std::string& filename, int Nmax,
+    thrust::device_vector<float>& posx,
+    thrust::device_vector<float>& posy,
+    thrust::device_vector<int>& posz,
+    thrust::device_vector<int>& which_vortex_is)
+{
+    std::ifstream fin(filename);
+    if (!fin.is_open()) {
+        std::cerr << "Error: could not open restart file " << filename << "\n";
+        return false;
+    }
+
+    std::string line;
+    std::getline(fin, line);  // "Iter = ..."
+    std::getline(fin, line);  // "Temperatura = ..."
+    std::getline(fin, line);  // column header
+
+    // Read every row the file has, not just the first Nmax -- capping the
+    // read at Nmax would silently accept a file with MORE rows than
+    // expected (e.g. from a mismatched --nx/--ny/--nz), truncating it
+    // instead of catching the mismatch.
+    std::vector<float> vx, vy;
+    std::vector<int> vz, vgid;
+    vx.reserve(Nmax); vy.reserve(Nmax); vz.reserve(Nmax); vgid.reserve(Nmax);
+
+    float x, y, fxv, fyv;
+    int z, gid, label, cell;
+    // operator>> skips all whitespace, including the blank lines
+    // printConfiguration() inserts between layers.
+    while (fin >> x >> y >> z >> fxv >> fyv >> gid >> label >> cell) {
+        vx.push_back(x);
+        vy.push_back(y);
+        vz.push_back(z);
+        vgid.push_back(gid);
+    }
+
+    if (static_cast<int>(vx.size()) != Nmax) {
+        std::cerr << "Error: restart file " << filename << " has " << vx.size()
+                  << " rows, expected " << Nmax << " (check --nx/--ny/--nz match the original run).\n";
+        return false;
+    }
+
+    thrust::host_vector<float> h_posx(vx.begin(), vx.end());
+    thrust::host_vector<float> h_posy(vy.begin(), vy.end());
+    thrust::host_vector<int> h_posz(vz.begin(), vz.end());
+    thrust::host_vector<int> h_which(vgid.begin(), vgid.end());
+
+    posx = h_posx;
+    posy = h_posy;
+    posz = h_posz;
+    which_vortex_is = h_which;
+    return true;
+}
+
+// ============================================================================
 // Command-line parameters
 // ============================================================================
 
@@ -543,6 +701,8 @@ struct SimParams {
     float skin = 0.5f;
     unsigned long long seed = 1234567ULL;
     int print_interval = 100;
+    std::string restart_file;   // empty = fresh start
+    int start_step = -1;        // -1 = auto-detect from the restart filename
 };
 
 void printUsage(const char* prog) {
@@ -560,6 +720,10 @@ void printUsage(const char* prog) {
         "  --skin F            Verlet skin width                (default 0.5)\n"
         "  --seed N            RNG seed                        (default 1234567)\n"
         "  --print-interval N  steps between snapshot writes   (default 100)\n"
+        "  --restart FILE      resume from a config_step_<N>.dat (or configIni.dat)\n"
+        "                      instead of a fresh lattice; pass the SAME --nx/--ny/--nz/\n"
+        "                      --a0/--k/--T/--dt/--cutoff/--skin/--seed as the original run\n"
+        "  --start-step N      step to resume at (default: parsed from --restart's filename)\n"
         "  -h, --help          show this message\n";
 }
 
@@ -586,6 +750,8 @@ int parseArgs(int argc, char** argv, SimParams& p) {
             else if (arg == "--skin") p.skin = std::stof(next());
             else if (arg == "--seed") p.seed = std::stoull(next());
             else if (arg == "--print-interval") p.print_interval = std::stoi(next());
+            else if (arg == "--restart") p.restart_file = next();
+            else if (arg == "--start-step") p.start_step = std::stoi(next());
             else throw std::invalid_argument("unknown option " + arg);
         }
     } catch (const std::exception& e) {
@@ -650,13 +816,41 @@ int main(int argc, char** argv) {
 
     bool use_cell_list = (USE_CELL_LIST == 1);
 
+    // --- Restart bookkeeping ---
+    bool restarting = !p.restart_file.empty();
+    int start_step = 0;
+    if (restarting) {
+        int parsed_step;
+        if (p.start_step >= 0) {
+            start_step = p.start_step;
+        } else if (baseName(p.restart_file) == "configIni.dat") {
+            start_step = 0;
+        } else if (parseStepFromFilename(p.restart_file, parsed_step)) {
+            start_step = parsed_step + 1;
+        } else {
+            std::cerr << "Error: could not determine the step to resume from for '"
+                      << p.restart_file << "'. Pass --start-step explicitly.\n";
+            return EXIT_FAILURE;
+        }
+
+        if (start_step >= steps) {
+            std::cerr << "Error: --start-step " << start_step << " is not before --steps "
+                      << steps << "; nothing to do.\n";
+            return EXIT_FAILURE;
+        }
+
+        std::cout << "Restarting from " << p.restart_file << " at step " << start_step << "\n";
+        checkRestartConsistency(dirName(p.restart_file) + "/simulation.log",
+                                Nmax, a0, k_spring, T, dt, cutoff, skin, p.seed);
+    }
+
     writeSimulationLog(
         "simulation.log",
         Nx, Ny, Nz, Nmax,
         a0, Lx, Ly,
         k_spring, T, dt, steps, cutoff,
         Ncx, Ncy, Ncxy, Nc, cut_offx, cut_offy,
-        use_cell_list, skin, cutoff_skin
+        use_cell_list, skin, cutoff_skin, p.seed
     );
 
     // --- Allocations ---
@@ -677,16 +871,27 @@ int main(int argc, char** argv) {
 #endif
 
     // Initialize position state. which_vortex_is[slot] = globally unique id.
-    thrust::transform(
+    if (restarting) {
+        if (!loadConfiguration(p.restart_file, Nmax, posx, posy, posz, which_vortex_is))
+            return EXIT_FAILURE;
+    } else {
+        thrust::transform(
+            thrust::make_counting_iterator(0),
+            thrust::make_counting_iterator(Nmax),
+            thrust::make_zip_iterator(thrust::make_tuple(
+                posx.begin(), posy.begin(), posz.begin(), which_vortex_is.begin())),
+            InitTriangularLattice{Nx, Nxy, a0, Lx, Ly}
+        );
+    }
+
+    // where_vortex_is[global id] = slot. Valid whether which_vortex_is is the
+    // identity permutation (fresh start) or loaded from a restart file.
+    thrust::scatter(
         thrust::make_counting_iterator(0),
         thrust::make_counting_iterator(Nmax),
-        thrust::make_zip_iterator(thrust::make_tuple(
-            posx.begin(), posy.begin(), posz.begin(), which_vortex_is.begin())),
-        InitTriangularLattice{Nx, Nxy, a0, Lx, Ly}
+        which_vortex_is.begin(),
+        where_vortex_is.begin()
     );
-
-    // where_vortex_is[global id] = slot. Initially the identity permutation.
-    thrust::sequence(where_vortex_is.begin(), where_vortex_is.end(), 0);
 
 #if USE_CELL_LIST == 1
     std::cout << "Running with [Cell List O(N)] mode (Verlet skin = " << skin << ")...\n";
@@ -702,8 +907,12 @@ int main(int argc, char** argv) {
     std::cout << "Running with [Direct O(N^2)] mode...\n";
 #endif
 
-    printConfiguration("configIni.dat", 0, T, Nmax, Nxy,
-                       posx, posy, posz, fx, fy, which_vortex_is, cell_ids);
+    // configIni.dat represents the pristine initial lattice, so don't
+    // overwrite it when continuing an already-running trajectory.
+    if (!restarting) {
+        printConfiguration("configIni.dat", 0, T, Nmax, Nxy,
+                           posx, posy, posz, fx, fy, which_vortex_is, cell_ids);
+    }
 
     
     std::cout << "Starting simulation..." << std::endl;
@@ -712,7 +921,7 @@ int main(int argc, char** argv) {
     auto start_time = std::chrono::high_resolution_clock::now();
     
     // --- Dynamic Loop ---
-    for (int step = 0; step < steps; ++step) {
+    for (int step = start_step; step < steps; ++step) {
 
 #if USE_CELL_LIST == 1
         // 1-4. Verlet-skin check: only re-sort into cells once some particle has
@@ -808,10 +1017,12 @@ int main(int argc, char** argv) {
     // Stop timer
     auto end_time = std::chrono::high_resolution_clock::now();
     
-    // Calculate durations
+    // Calculate durations. Divide by the steps actually executed THIS
+    // invocation, not the final target `steps` -- on a restart those differ.
+    int executed_steps = steps - start_step;
     std::chrono::duration<double> total_seconds = end_time - start_time;
-    double ms_per_step = (total_seconds.count() * 1000.0) / steps;
-    
+    double ms_per_step = (total_seconds.count() * 1000.0) / executed_steps;
+
     // Print timing results
     std::cout << "\n====================================================\n";
     std::cout << "               PERFORMANCE METRICS                  \n";
@@ -819,8 +1030,8 @@ int main(int argc, char** argv) {
     std::cout << "Total Run Time   : " << total_seconds.count() << " seconds\n";
     std::cout << "Average Time/Step: " << ms_per_step << " ms\n";
 #if USE_CELL_LIST == 1
-    std::cout << "Cell List Rebuilds: " << rebuild_count << " / " << steps
-               << " steps (avg every " << (double(steps) / rebuild_count) << " steps)\n";
+    std::cout << "Cell List Rebuilds: " << rebuild_count << " / " << executed_steps
+               << " steps (avg every " << (double(executed_steps) / rebuild_count) << " steps)\n";
 #endif
     std::cout << "====================================================\n";
 

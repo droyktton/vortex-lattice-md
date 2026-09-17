@@ -71,11 +71,51 @@ command line:
 | `--skin`            | Verlet skin width                | 0.5       |
 | `--seed`            | RNG seed                        | 1234567   |
 | `--print-interval`  | steps between snapshot writes   | 100       |
+| `--restart`, `--start-step` | resume from a checkpoint (see below) | off |
 
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
 every vortex, saved every `--print-interval` steps plus always the last one
 (`config_step_<steps-1>.dat`).
+
+### Restart / checkpoint
+
+```sh
+./vortex_sim --nx 30 --ny 30 --T 0.02 --steps 3000 --seed 42            # hits a wall-clock limit at step 1800
+./vortex_sim --nx 30 --ny 30 --T 0.02 --steps 3000 --seed 42 \
+    --restart config_step_1800.dat                                      # resumes at 1801, runs to 3000
+```
+
+`--restart FILE` resumes from a previously written `config_step_<N>.dat` (or
+`configIni.dat`, to restart from the pristine initial lattice) instead of
+generating a fresh triangular lattice. `--steps` keeps meaning the final
+target step count, not "how many more steps" — the run continues from
+wherever `--restart` left off up to `--steps`.
+
+The step to resume at defaults to `N+1` (parsed from the filename), or `0`
+for `configIni.dat`; override with `--start-step` if you've renamed the
+file. Two things make this possible without a dedicated checkpoint format:
+the position/layer/identity columns already in `config_step_<N>.dat` are
+everything physically needed, and the RNG (Philox4x32, keyed on
+`(vortex id, step, seed)`) is stateless — resuming just means continuing to
+count `step` from the right place, not restoring any generator state.
+
+**You must pass the same `--nx`/`--ny`/`--nz`/`--a0`/`--k`/`--T`/`--dt`/
+`--cutoff`/`--skin`/`--seed` as the original run** — none of these are
+recoverable from the checkpoint file's physical state alone, and getting one
+wrong (especially `--seed`) silently continues under different physics or
+replays already-used noise rather than failing loudly. As a safety net, if a
+`simulation.log` from the original run sits next to the restart file, its
+parameters are cross-checked against the current invocation and any mismatch
+prints a warning (not a hard error, since deliberately changing `--T` mid-run
+for an annealing schedule is a legitimate use of `--restart` too). A restart
+file with the wrong number of rows (from mismatched `--nx`/`--ny`/`--nz`) is
+a hard error, since positions can't be meaningfully loaded at all.
+
+`configIni.dat` and the initial cell-list build are skipped on restart (they
+represent/apply to the pristine lattice, not the resume point); everything
+else — output file naming, `--print-interval`, the Verlet-skin cell list —
+behaves exactly as in a fresh run.
 
 ## Which analysis do I run?
 
