@@ -129,6 +129,7 @@ snapshots) rather than just one:
 | The lattice / flux lines                      | `vizconfig.py` | one snapshot                    |
 | Positional order: g(r), S(k), S(q)            | `analyze.py`   | one snapshot (or many, see below) |
 | Topological defects: disclinations            | `disclinations.py` | one snapshot (or many)     |
+| Flux-line roughness (wandering vs own mean)   | `roughness.py` | one snapshot (or many)          |
 | Diffusion: MSD vs t, and D                    | `msd.py`       | a trajectory (small `--print-interval`) |
 | Compare a quantity across runs (e.g. vs T)    | `compare.py`   | one `.dat` per run              |
 | All of the above across a temperature sweep   | `tsweep.py`    | just `vortex_sim`; it drives the rest |
@@ -248,6 +249,35 @@ no colored sites at all), climbing smoothly through ~5-8% at T=0.01 to
 ~44-46% at T=0.03 — consistent with the same T=0.01–0.015 melting range
 g(r)/S(q)/MSD already pointed to.
 
+## Analyze (vortex line roughness)
+
+```sh
+python3 roughness.py config_step_499.dat
+python3 roughness.py "config_step_*.dat" --step-min 1500 --step-max 3000 --stride 10
+```
+
+How much each flux line wanders transversely around its own mean position —
+a roughness/Lindemann-type measure of a single vortex line, as opposed to
+disclinations (positional order of the lattice) or MSD (diffusion in time).
+For each vortex line (persistent in-plane `label`, z-unwrapped the same way
+as the 3D flux-line plot so a line anchored near a box edge doesn't bias its
+own mean), computes
+
+&nbsp;&nbsp;⟨u²⟩ = (1/Nz) Σ_z |r(z) − r_cm|² ,  r_cm = (1/Nz) Σ_z r(z)
+
+then averages ⟨u²⟩ over every line (and, in multi-config mode, over every
+matched configuration too — same `--step-min`/`--step-max`/`--stride`
+convention as `analyze.py`/`disclinations.py`). Produces:
+
+- `<name>_roughness.dat` — one row: the ensemble-averaged ⟨u²⟩ and the
+  number of (line, config) samples it was averaged over.
+- `<name>_roughness_hist.png` — histogram of ⟨u²⟩ across individual lines,
+  with the ensemble mean marked. A crystal's lines vibrate a little around
+  straight; a liquid's wander much further — the two reference runs used to
+  validate this script give ⟨u²⟩ ≈ 0.0023 (T=0.005, solid) vs ≈ 0.016-0.018
+  (T=0.03, liquid), roughly an order of magnitude apart, and it's now part
+  of `tsweep.py`'s summary alongside D, defect fraction, and S(q) peak.
+
 ## Analyze (mean squared displacement)
 
 ```sh
@@ -313,10 +343,10 @@ python3 tsweep.py 0.005 0.01 0.015 0.02 0.03
 ```
 
 Runs the whole pipeline — `vortex_sim`, then `analyze.py`, `msd.py`,
-`disclinations.py` on the equilibrated part of each run — once per
-temperature, and collects the melting-relevant scalars (D, disclination
-fraction, S(q) peak height) into one table plotted vs T. Concretely, for
-each T this:
+`disclinations.py`, `roughness.py` on the equilibrated part of each run —
+once per temperature, and collects the melting-relevant scalars (D,
+disclination fraction, S(q) peak height, line roughness) into one table
+plotted vs T. Concretely, for each T this:
 
 1. Runs `./vortex_sim --T <T> ...` in its own `runs/T_<T>/` folder.
 2. Runs `analyze.py "config_step_*.dat" --step-min ... --stride ... --out-prefix equil`
@@ -324,13 +354,17 @@ each T this:
 3. Runs `msd.py --window ... --origin-spacing ... --t0-min ...` (MSD + the D fit).
 4. Runs `disclinations.py "config_step_*.dat" --step-min ... --stride ... --out-prefix equil`
    (pooled defect statistics over the same equilibrated part).
-5. Reads `D` from `msd_diffusion.dat`, the overall defect fraction from
-   `equil_disclinations.dat`, and `max(S(q))` from `equil_sq.dat`.
+5. Runs `roughness.py "config_step_*.dat" --step-min ... --stride ... --out-prefix equil`
+   (pooled line roughness over the same equilibrated part).
+6. Reads `D` from `msd_diffusion.dat`, the overall defect fraction from
+   `equil_disclinations.dat`, `max(S(q))` from `equil_sq.dat`, and the
+   ensemble ⟨u²⟩ from `equil_roughness.dat`.
 
 Produces, in `--out-dir` (default `runs/`):
 
-- `summary.dat` — one row per T: `T D defect_fraction Sq_max`.
-- `summary_D_vs_T.png`, `summary_defects_vs_T.png`, `summary_Sqmax_vs_T.png`.
+- `summary.dat` — one row per T: `T D defect_fraction Sq_max mean_u2`.
+- `summary_D_vs_T.png`, `summary_defects_vs_T.png`, `summary_Sqmax_vs_T.png`,
+  `summary_roughness_vs_T.png`.
 
 **Equilibration time is very T-dependent** — it grows sharply near the
 melting transition (critical slowing down) and can be much shorter far from
@@ -383,6 +417,7 @@ python3 vizconfig.py config_step_999.dat --show
 - `analyze.py` — g(r), S(k), and S(q), z-averaged (and optionally time-averaged)
 - `disclinations.py` — per-layer Delaunay triangulation and disclinations
   (also optionally time-averaged)
+- `roughness.py` — flux-line roughness ⟨u²⟩ (also optionally time-averaged)
 - `msd.py` — mean squared displacement vs time, and the diffusion constant D
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `tsweep.py` — run the full pipeline across a temperature sweep

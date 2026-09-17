@@ -49,6 +49,11 @@ def load_sq_max(path):
     return float(np.nanmax(data[:, 1]))
 
 
+def load_mean_u2(path):
+    """mean_u2 from a roughness.dat (columns: mean_u2, n_samples)."""
+    return load_scalar(path, col=0)
+
+
 def plot_summary(Ts, values, ylabel, title, out_path, logy=False):
     pairs = [(T, v) for T, v in zip(Ts, values) if v is not None]
     if not pairs:
@@ -71,8 +76,9 @@ def plot_summary(Ts, values, ylabel, title, out_path, logy=False):
 def main():
     parser = argparse.ArgumentParser(
         description='Run vortex_sim plus the full analysis pipeline (analyze.py, msd.py, '
-                     'disclinations.py) across a temperature sweep, and collect a scalar '
-                     'summary (D, defect fraction, S(q) peak) vs T.')
+                     'disclinations.py, roughness.py) across a temperature sweep, and '
+                     'collect a scalar summary (D, defect fraction, S(q) peak, line '
+                     'roughness) vs T.')
     parser.add_argument('temperatures', type=float, nargs='+',
                         help='T values to sweep, e.g. 0.005 0.01 0.015 0.02 0.03')
     parser.add_argument('--out-dir', default='runs',
@@ -143,18 +149,25 @@ def main():
              '--step-min', str(step_min), '--stride', str(stride), '--out-prefix', 'equil'],
             cwd=run_dir)
 
+        run(['python3', os.path.join(scripts_dir, 'roughness.py'), 'config_step_*.dat',
+             '--step-min', str(step_min), '--stride', str(stride), '--out-prefix', 'equil'],
+            cwd=run_dir)
+
         D = load_scalar(os.path.join(run_dir, 'msd_diffusion.dat'))
         defect_frac = load_defect_fraction(os.path.join(run_dir, 'equil_disclinations.dat'))
         sq_max = load_sq_max(os.path.join(run_dir, 'equil_sq.dat'))
-        summary.append((T, D, defect_frac, sq_max))
-        print(f"--- T={T}: D={D}  defect_fraction={defect_frac}  S(q)_max={sq_max}")
+        mean_u2 = load_mean_u2(os.path.join(run_dir, 'equil_roughness.dat'))
+        summary.append((T, D, defect_frac, sq_max, mean_u2))
+        print(f"--- T={T}: D={D}  defect_fraction={defect_frac}  S(q)_max={sq_max}  "
+              f"mean_u2={mean_u2}")
 
     summary_path = os.path.join(args.out_dir, 'summary.dat')
     np.savetxt(summary_path,
                [[T, D if D is not None else np.nan,
                  f if f is not None else np.nan,
-                 s if s is not None else np.nan] for T, D, f, s in summary],
-               header='T  D  defect_fraction  Sq_max', comments='')
+                 s if s is not None else np.nan,
+                 u if u is not None else np.nan] for T, D, f, s, u in summary],
+               header='T  D  defect_fraction  Sq_max  mean_u2', comments='')
     print(f"\nSaved {summary_path}")
 
     Ts = [r[0] for r in summary]
@@ -164,6 +177,8 @@ def main():
                  os.path.join(args.out_dir, 'summary_defects_vs_T.png'))
     plot_summary(Ts, [r[3] for r in summary], 'max S(q)', 'S(q) peak height vs T',
                  os.path.join(args.out_dir, 'summary_Sqmax_vs_T.png'), logy=True)
+    plot_summary(Ts, [r[4] for r in summary], r'$\langle u^2 \rangle$', 'Vortex line roughness vs T',
+                 os.path.join(args.out_dir, 'summary_roughness_vs_T.png'), logy=True)
 
 
 if __name__ == "__main__":
