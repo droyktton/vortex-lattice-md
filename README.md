@@ -133,9 +133,15 @@ averages both over the z-stack. Produces:
 - `<name>_sq.png` / `<name>_sq.dat` — S(q), the azimuthal average of
   S(kx, ky) over rings of fixed q = √(kx²+ky²) (k=0 excluded), the k-space
   analog of g(r). A liquid shows one broad principal peak decaying to
-  S(q)→1; a crystal shows sharp, much taller peaks that don't decay. The
-  lowest q bin is noisy (very few grid points fall that close to the
-  origin) — ignore it.
+  S(q)→1; a crystal shows sharp, much taller peaks that don't decay.
+- `<name>_sq_nocross.png` / `.dat` — the same, but also excluding the whole
+  kx=0 and ky=0 lines, not just the origin. Fourier-transforming any finite
+  rectangular window (our periodic box) produces spurious sinc-like
+  intensity along the axes aligned with its edges — visible as a faint
+  cross through the center of `_sk.png` — which otherwise leaks into every
+  ring the plain S(q) averages over and inflates the lowest q bins. Compare
+  the two to see how much of the low-q signal in `_sq.png` was that
+  artifact rather than real structure.
 
 `--kmax` defaults to about 4 reciprocal lattice shells based on `a0` (read
 from `simulation.log`); `--kres` (grid points per k-axis) trades runtime for
