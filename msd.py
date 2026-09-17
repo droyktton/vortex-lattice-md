@@ -5,6 +5,7 @@ import glob
 import argparse
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 
 from vizconfig import load_config, find_box_size, find_log_value
@@ -91,13 +92,13 @@ def compute_msd(ux, uy, origin_spacing, window, t0_min=0):
         window = Nt - 1 - t0_min
 
     lags = np.arange(0, window + 1)
-    msd = np.zeros(len(lags))
-    for t0 in origins:
+    msd_per_origin = np.empty((len(origins), len(lags)))
+    for i, t0 in enumerate(origins):
         dx = ux[t0:t0 + window + 1] - ux[t0]
         dy = uy[t0:t0 + window + 1] - uy[t0]
-        msd += (dx ** 2 + dy ** 2).mean(axis=1)
-    msd /= len(origins)
-    return lags, msd, origins
+        msd_per_origin[i] = (dx ** 2 + dy ** 2).mean(axis=1)
+    msd = msd_per_origin.mean(axis=0)
+    return lags, msd, origins, msd_per_origin
 
 
 def plot_msd(t, msd, out_path, time_label):
@@ -106,6 +107,31 @@ def plot_msd(t, msd, out_path, time_label):
     plt.xlabel(time_label)
     plt.ylabel(r'MSD $= \langle [r(t_0+\Delta t) - r(t_0)]^2 \rangle$')
     plt.title('Vortex mean squared displacement')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved {out_path}")
+
+
+def plot_msd_windows(t, msd_per_origin, t0_physical, msd_avg, out_path, time_label):
+    """One curve per time origin, colored by t0, plus the average -- lets you
+    check by eye whether the per-window MSD has settled down (curves from
+    different t0 overlap) or is still drifting (steady state not reached)."""
+    plt.figure(figsize=(7, 5))
+    cmap = matplotlib.colormaps['viridis']
+    vmax = max(float(np.max(t0_physical)), 1e-12)
+    for row, t0 in zip(msd_per_origin, t0_physical):
+        plt.plot(t, row, color=cmap(t0 / vmax), alpha=0.6, linewidth=1)
+    plt.plot(t, msd_avg, color='black', linewidth=2, label='average over windows')
+
+    mappable = matplotlib.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, vmax))
+    mappable.set_array(t0_physical)
+    plt.colorbar(mappable, ax=plt.gca(), label=r'window start $t_0$')
+
+    plt.xlabel(time_label)
+    plt.ylabel(r'MSD per window $= [r(t_0+\Delta t) - r(t_0)]^2$')
+    plt.title('Per-window MSD (check convergence to steady state)')
+    plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
@@ -154,20 +180,24 @@ def main():
     xs, ys = load_trajectory(snaps)
     ux, uy = unwrap_trajectory(xs, ys, Lx, Ly)
 
-    lags, msd, origins = compute_msd(ux, uy, args.origin_spacing, args.window, args.t0_min)
+    lags, msd, origins, msd_per_origin = compute_msd(ux, uy, args.origin_spacing, args.window, args.t0_min)
     print(f"{len(origins)} time origin(s), window {lags[-1]} snapshots")
 
     lag_steps = lags * spacing
+    t0_steps = np.array(origins) * spacing
     if dt:
         t_axis, time_label = lag_steps * dt, r'$\Delta t$ (simulation time)'
+        t0_physical = t0_steps * dt
     else:
         t_axis, time_label = lag_steps, r'$\Delta t$ (steps)'
+        t0_physical = t0_steps
 
     out_prefix = args.out_prefix or os.path.join(os.path.dirname(snaps[0][1]) or '.', 'msd')
     np.savetxt(out_prefix + '.dat', np.column_stack([t_axis, msd]),
                header='t  MSD', comments='')
     print(f"Saved {out_prefix}.dat")
     plot_msd(t_axis, msd, out_prefix + '.png', time_label)
+    plot_msd_windows(t_axis, msd_per_origin, t0_physical, msd, out_prefix + '_windows.png', time_label)
 
     if args.show:
         plt.show()

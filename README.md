@@ -155,8 +155,15 @@ huge jump — this assumes true displacement between consecutive *saved*
 snapshots stays under half the box, so don't set `--print-interval` too
 coarse relative to how fast the vortices actually move. Any trailing
 snapshot that breaks uniform step spacing (e.g. the always-saved final step)
-is dropped automatically. Produces `msd.dat` (two columns: t, MSD) and
-`msd.png`.
+is dropped automatically. Produces:
+
+- `msd.dat` — two columns: t, MSD (averaged over windows).
+- `msd.png` — that average, vs t.
+- `msd_windows.png` — every window's own MSD(Δt) curve, colored by its start
+  time t₀, plus the average in black. Use this to check convergence to
+  steady state: if the earliest (darkest) curves sit apart from the rest,
+  the trajectory hadn't equilibrated yet at those t₀ — raise `--t0-min` to
+  exclude them.
 
 ## End-to-end example
 
