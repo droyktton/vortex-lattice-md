@@ -99,7 +99,35 @@ def plot_layer(ax, x, y, Lx, Ly, neighbors):
     n5 = int(np.sum(charge == 1))
     n7 = int(np.sum(charge == -1))
     n_other = n_defects - n5 - n7
-    return n_defects, n5, n7, n_other
+    return n_defects, n5, n7, n_other, coord
+
+
+def plot_coord_histogram(coord_by_layer, out_path):
+    """Coordination number histogram, one group of bars per layer so they're
+    directly comparable. A perfect triangular lattice is a single spike at 6;
+    a liquid spreads out around it, roughly symmetric between 5- and 7-fold."""
+    layers = list(coord_by_layer.keys())
+    all_coord = np.concatenate(list(coord_by_layer.values()))
+    c_min, c_max = int(all_coord.min()), int(all_coord.max())
+    edges = np.arange(c_min, c_max + 2)
+    centers = edges[:-1]
+    width = 0.8 / len(layers)
+
+    plt.figure(figsize=(7, 5))
+    for i, z in enumerate(layers):
+        counts, _ = np.histogram(coord_by_layer[z], bins=edges)
+        offset = (i - (len(layers) - 1) / 2) * width
+        plt.bar(centers + offset, counts, width=width, label=f'z={z}')
+    plt.axvline(6, color='gray', linestyle='--', linewidth=1)
+    plt.xlabel('coordination number')
+    plt.ylabel('count')
+    plt.xticks(centers)
+    plt.title('Coordination number histogram')
+    plt.legend()
+    plt.grid(True, axis='y')
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved {out_path}")
 
 
 def main():
@@ -146,16 +174,23 @@ def main():
     axes = axes[0]
 
     rows = []
+    coord_by_layer = {}
     for ax, z in zip(axes, layers):
         g = df[df['z'] == z]
         x, y = g['x'].to_numpy(), g['y'].to_numpy()
         neighbors = periodic_neighbors(x, y, Lx, Ly, bond_cutoff)
-        n_defects, n5, n7, n_other = plot_layer(ax, x, y, Lx, Ly, neighbors)
+        n_defects, n5, n7, n_other, coord = plot_layer(ax, x, y, Lx, Ly, neighbors)
         frac = n_defects / len(x)
         rows.append((z, len(x), n_defects, frac, n5, n7, n_other))
+        coord_by_layer[z] = coord
         ax.set_title(f'z={z} — {n_defects}/{len(x)} defects ({100*frac:.1f}%)', fontsize=9)
         print(f"  z={z}: N={len(x)}  defects={n_defects} ({100*frac:.2f}%)  "
               f"5-fold={n5}  7-fold={n7}  other={n_other}")
+
+    total_N = sum(r[1] for r in rows)
+    total_defects = sum(r[2] for r in rows)
+    print(f"Total: {total_defects}/{total_N} defects ({100*total_defects/total_N:.2f}%) "
+          f"across {len(layers)} layers")
 
     fig.suptitle(f'Delaunay triangulation & disclinations — {os.path.basename(args.filename)}')
     fig.tight_layout()
@@ -169,6 +204,8 @@ def main():
     np.savetxt(dat_path, np.array(rows),
                header='z  N  n_defects  defect_fraction  n_5fold  n_7fold  n_other', comments='')
     print(f"Saved {dat_path}")
+
+    plot_coord_histogram(coord_by_layer, base + '_coord_hist.png')
 
     if args.show:
         plt.show()

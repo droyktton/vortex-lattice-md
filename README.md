@@ -179,7 +179,11 @@ coordination number isn't 6 — a disclination, with topological charge
   gray, 5-fold sites (charge +1) in blue, 7-fold (charge −1) in red, and
   anything more exotic in orange.
 - `<name>_disclinations.dat` — per layer: N, defect count, defect fraction,
-  and the 5-fold/7-fold/other breakdown.
+  and the 5-fold/7-fold/other breakdown. The total defect count across all
+  layers is also printed to the console.
+- `<name>_coord_hist.png` — coordination-number histogram, grouped bars per
+  layer. A perfect crystal is a single spike at 6; a liquid spreads out
+  around it, roughly symmetric between 5- and 7-fold.
 
 A near-perfect triangular lattice is close to the worst case for Delaunay:
 every hexagonal ring of 6 neighbors sits almost exactly on a circle around
