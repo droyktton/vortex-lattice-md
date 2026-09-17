@@ -117,12 +117,21 @@ diagonal jump).
 
 ```sh
 python3 analyze.py config_step_499.dat
-python3 analyze.py config_step_499.dat --dr 0.02 --kmax 15 --kres 301 --show
+python3 analyze.py config_step_499.dat --dr 0.02 --kmax 15 --show
 ```
 
 Computes, per layer, the 2D radial distribution function g(r) and the structure factor
-S(k) = |Σⱼ exp(-i k·rⱼ)|²/N (periodic minimum image, no time averaging), then
-averages both over the z-stack. Produces:
+S(k) = |Σⱼ exp(-i k·rⱼ)|²/N, then averages both over the z-stack. S(k) is
+evaluated only at the box's own reciprocal lattice, kx = 2πm/Lx, ky = 2πn/Ly
+for integer m, n — the only k-points where summing over one periodic cell
+exactly reproduces the coherent scattering of the infinite PBC-tiled system
+(every periodic image contributes an identical phase there). Off that
+lattice, the same sum is indistinguishable from the Fourier transform of a
+single finite, non-periodic rectangular cluster, which produces spurious
+sinc-like streaking along the kx=0/ky=0 axes — a finite-window artifact of
+the box shape that persists regardless of the simulation's own periodic
+boundaries, since it comes from *where* S(k) is sampled, not from the
+dynamics. Produces:
 
 - `<name>_gr.png` — g(r); a crystalline lattice shows persistent oscillations
   around 1, not the decay of a liquid.
@@ -134,19 +143,11 @@ averages both over the z-stack. Produces:
   S(kx, ky) over rings of fixed q = √(kx²+ky²) (k=0 excluded), the k-space
   analog of g(r). A liquid shows one broad principal peak decaying to
   S(q)→1; a crystal shows sharp, much taller peaks that don't decay.
-- `<name>_sq_nocross.png` / `.dat` — the same, but also excluding the whole
-  kx=0 and ky=0 lines, not just the origin. Fourier-transforming any finite
-  rectangular window (our periodic box) produces spurious sinc-like
-  intensity along the axes aligned with its edges — visible as a faint
-  cross through the center of `_sk.png` — which otherwise leaks into every
-  ring the plain S(q) averages over and inflates the lowest q bins. Compare
-  the two to see how much of the low-q signal in `_sq.png` was that
-  artifact rather than real structure.
 
-`--kmax` defaults to about 4 reciprocal lattice shells based on `a0` (read
-from `simulation.log`); `--kres` (grid points per k-axis) trades runtime for
-resolution — the direct summation is O(kres² × N) per layer. `--dq` (S(q)
-bin width) defaults to the k-grid's own spacing.
+Because the grid is tied to the box, `--kres` doesn't exist — resolution is
+whatever `2π/Lx`, `2π/Ly` give you; `--kmax` (default: ~4 reciprocal shells
+based on `a0`, read from `simulation.log`) only controls how many shells to
+compute. `--dq` (S(q) bin width) defaults to the finer of `2π/Lx`, `2π/Ly`.
 
 ## Analyze (mean squared displacement)
 

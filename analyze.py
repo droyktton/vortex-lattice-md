@@ -31,35 +31,38 @@ def compute_gr_layer(x, y, Lx, Ly, dr, r_max):
     return r_mid, g
 
 
-def compute_sk_layer(x, y, k_max, n_k):
-    """Structure factor S(kx, ky) = |sum_j exp(-i k.r_j)|^2 / N on a regular
-    k-grid, for one layer."""
+def compute_sk_layer(x, y, Lx, Ly, k_max):
+    """Structure factor S(kx, ky) = |sum_j exp(-i k.r_j)|^2 / N, evaluated
+    only at the box's OWN reciprocal lattice: kx_m = 2*pi*m/Lx, ky_n =
+    2*pi*n/Ly for integer m, n. These are the only k-points at which summing
+    over the N particles in one periodic cell exactly reproduces the
+    coherent scattering of the infinite PBC-tiled system -- every periodic
+    image contributes the identical phase, exp(-i k_mn . (Lx*p, Ly*q)) = 1
+    for any integers p, q. At any other k, the same sum is indistinguishable
+    from the Fourier transform of a single finite, non-periodic rectangular
+    cluster, which produces spurious sinc-like streaking along the axes
+    (visible as a "cross" through the origin) -- a finite-window artifact of
+    the box shape, not real structure, and it does not go away just because
+    the simulation itself used periodic boundaries."""
     N = len(x)
-    k_axis = np.linspace(-k_max, k_max, n_k)
-    KX, KY = np.meshgrid(k_axis, k_axis)
+    m_max = max(1, int(np.floor(k_max * Lx / (2 * np.pi))))
+    n_max = max(1, int(np.floor(k_max * Ly / (2 * np.pi))))
+    kx_axis = (2 * np.pi / Lx) * np.arange(-m_max, m_max + 1)
+    ky_axis = (2 * np.pi / Ly) * np.arange(-n_max, n_max + 1)
+    KX, KY = np.meshgrid(kx_axis, ky_axis)
     phase = KX.ravel()[:, None] * x[None, :] + KY.ravel()[:, None] * y[None, :]
     rho_k = np.exp(-1j * phase).sum(axis=1)
     S = (np.abs(rho_k) ** 2) / N
     return KX, KY, S.reshape(KX.shape)
 
 
-def radial_average_sk(KX, KY, S, dq, q_max, exclude_cross=False):
+def radial_average_sk(KX, KY, S, dq, q_max):
     """Azimuthal average of S(kx, ky) over rings of fixed q = sqrt(kx^2+ky^2),
     the same way g(r) is already a radial average in real space. Excludes the
-    trivial k=0 point (S(0) = N).
-
-    exclude_cross=True additionally drops the whole kx=0 and ky=0 lines, not
-    just the origin. Fourier-transforming any finite rectangular window (our
-    periodic box) produces spurious sinc-like intensity along the axes
-    aligned with its edges -- a finite-size artifact of the box shape, not
-    real structure -- and it otherwise leaks into every ring that crosses
-    those two lines."""
+    trivial k=0 point (S(0) = N)."""
     q = np.hypot(KX, KY).ravel()
     s = S.ravel()
     mask = q > 1e-9
-    if exclude_cross:
-        dk = abs(KX[0, 1] - KX[0, 0])
-        mask &= (np.abs(KX).ravel() > dk / 2) & (np.abs(KY).ravel() > dk / 2)
     q, s = q[mask], s[mask]
 
     bins = np.arange(0.0, q_max + dq, dq)
@@ -129,10 +132,10 @@ def main():
     parser.add_argument('--rmax', type=float, default=None,
                         help='g(r) max radius (default: min(Lx,Ly)/2, the minimum-image limit)')
     parser.add_argument('--kmax', type=float, default=None,
-                        help='S(k) max |kx|,|ky| (default: ~4 Brillouin zones based on a0)')
-    parser.add_argument('--kres', type=int, default=201, help='S(k) grid points per axis (default 201)')
+                        help='S(k) max |kx|,|ky| (default: ~4 Brillouin zones based on a0); '
+                             'the grid itself is fixed by the box size (2*pi/Lx, 2*pi/Ly), not adjustable')
     parser.add_argument('--dq', type=float, default=None,
-                        help='S(q) radial bin width (default: matches the k-grid spacing, 2*kmax/(kres-1))')
+                        help='S(q) radial bin width (default: finer of 2*pi/Lx, 2*pi/Ly)')
     parser.add_argument('--show', action='store_true', help='also open interactive windows')
     args = parser.parse_args()
 
@@ -169,16 +172,15 @@ def main():
         x, y = g['x'].to_numpy(), g['y'].to_numpy()
         r_mid, gr = compute_gr_layer(x, y, Lx, Ly, args.dr, r_max)
         gr_list.append(gr)
-        kx_grid, ky_grid, sk = compute_sk_layer(x, y, k_max, args.kres)
+        kx_grid, ky_grid, sk = compute_sk_layer(x, y, Lx, Ly, k_max)
         sk_list.append(sk)
         KX, KY = kx_grid, ky_grid
 
     gr_avg = np.mean(gr_list, axis=0)
     sk_avg = np.mean(sk_list, axis=0)
 
-    dq = args.dq if args.dq is not None else 2 * k_max / (args.kres - 1)
+    dq = args.dq if args.dq is not None else min(2 * np.pi / Lx, 2 * np.pi / Ly)
     q_mid, sq_avg = radial_average_sk(KX, KY, sk_avg, dq, k_max)
-    q_mid_nc, sq_avg_nc = radial_average_sk(KX, KY, sk_avg, dq, k_max, exclude_cross=True)
 
     base, _ = os.path.splitext(args.filename)
     plot_gr(r_mid, gr_avg, args.filename, base + '_gr.png')
@@ -186,10 +188,6 @@ def main():
     plot_sq(q_mid, sq_avg, args.filename, base + '_sq.png')
     np.savetxt(base + '_sq.dat', np.column_stack([q_mid, sq_avg]), header='q  S(q)', comments='')
     print(f"Saved {base}_sq.dat")
-    plot_sq(q_mid_nc, sq_avg_nc, args.filename, base + '_sq_nocross.png',
-            title_suffix=' (kx=0, ky=0 excluded)')
-    np.savetxt(base + '_sq_nocross.dat', np.column_stack([q_mid_nc, sq_avg_nc]), header='q  S(q)', comments='')
-    print(f"Saved {base}_sq_nocross.dat")
 
     if args.show:
         plt.show()
