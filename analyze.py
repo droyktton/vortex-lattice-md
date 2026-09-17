@@ -1,6 +1,5 @@
 import sys
 import os
-import glob
 import argparse
 
 import numpy as np
@@ -8,32 +7,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
-from vizconfig import load_config, find_box_size, find_log_value, parse_step
-
-
-def gather_configs(pattern, step_min, step_max, stride=1):
-    """Resolve `pattern` to a sorted list of config files.
-
-    A literal filename with no glob metacharacter (e.g. the default
-    'configIni.dat') is used as-is, whatever it's named.
-
-    A wildcard pattern (e.g. 'config_step_*.dat') is expected to match
-    trajectory snapshots, so results are restricted to files that parse as
-    config_step_<N>.dat and fall in [step_min, step_max], then subsampled
-    every `stride`-th one. This also matters because the pattern can
-    accidentally pick up this script's OWN outputs sitting in the same
-    directory (config_step_<N>_sq.dat, _gr.png, ...) -- those don't match
-    the strict step pattern and are silently dropped rather than smuggled in
-    unfiltered. S(k) is the expensive part here, O(grid_size x N) per
-    (config, layer), so a long time range can get costly to average in full;
-    that's what --stride is for."""
-    if not any(c in pattern for c in '*?['):
-        return [pattern]
-
-    dated = sorted((parse_step(f), f) for f in glob.glob(pattern) if parse_step(f) is not None)
-    in_range = [f for s, f in dated
-                if (step_min is None or s >= step_min) and (step_max is None or s <= step_max)]
-    return in_range[::stride]
+from vizconfig import load_config, find_box_size, find_log_value, gather_configs, config_label, default_out_prefix
 
 
 def compute_gr_layer(x, y, Lx, Ly, dr, r_max):
@@ -189,12 +163,10 @@ def main():
 
     if len(files) == 1:
         print(f"Using {files[0]}")
-        label = os.path.basename(files[0])
     else:
         print(f"Averaging over {len(files)} configurations: "
               f"{os.path.basename(files[0])} .. {os.path.basename(files[-1])}")
-        s0, s1 = parse_step(files[0]), parse_step(files[-1])
-        label = f"{len(files)} configs, steps {s0}-{s1}" if s0 is not None else f"{len(files)} configs"
+    label = config_label(files)
 
     Lx, Ly = find_box_size(files[0])
     if Lx is None:
@@ -238,14 +210,7 @@ def main():
     dq = args.dq if args.dq is not None else min(2 * np.pi / Lx, 2 * np.pi / Ly)
     q_mid, sq_avg = radial_average_sk(KX, KY, sk_avg, dq, k_max)
 
-    if args.out_prefix:
-        base = args.out_prefix
-    elif len(files) == 1:
-        base, _ = os.path.splitext(files[0])
-    else:
-        d = os.path.dirname(files[0]) or '.'
-        s0, s1 = parse_step(files[0]), parse_step(files[-1])
-        base = os.path.join(d, f"avg_step{s0}-{s1}" if s0 is not None else "avg")
+    base = default_out_prefix(files, args.out_prefix)
 
     plot_gr(r_mid, gr_avg, label, base + '_gr.png')
     plot_sk(KX, KY, sk_avg, label, base + '_sk.png')

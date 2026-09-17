@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from scipy.spatial import Delaunay
 
-from vizconfig import load_config, find_box_size, find_log_value
+from vizconfig import load_config, find_box_size, find_log_value, gather_configs, config_label, default_out_prefix
 
 
 def periodic_neighbors(x, y, Lx, Ly, bond_cutoff=None):
@@ -77,10 +77,17 @@ DEFAULT_COLOR = 'tab:orange'
 BULK_COLOR = '0.65'
 
 
-def plot_layer(ax, x, y, Lx, Ly, neighbors):
+def layer_stats(neighbors):
     coord = np.array([len(n) for n in neighbors])
     charge = 6 - coord
+    n_defects = int(np.sum(coord != 6))
+    n5 = int(np.sum(charge == 1))
+    n7 = int(np.sum(charge == -1))
+    n_other = n_defects - n5 - n7
+    return coord, charge, n_defects, n5, n7, n_other
 
+
+def draw_layer(ax, x, y, Lx, Ly, neighbors, charge):
     segments = bond_segments(x, y, neighbors, Lx, Ly)
     ax.add_collection(LineCollection(segments, colors='0.8', linewidths=0.5, zorder=1))
 
@@ -94,12 +101,6 @@ def plot_layer(ax, x, y, Lx, Ly, neighbors):
     ax.set_xlim(0, Lx)
     ax.set_ylim(0, Ly)
     ax.set_aspect('equal')
-
-    n_defects = int(np.sum(coord != 6))
-    n5 = int(np.sum(charge == 1))
-    n7 = int(np.sum(charge == -1))
-    n_other = n_defects - n5 - n7
-    return n_defects, n5, n7, n_other, coord
 
 
 def plot_coord_histogram(coord_by_layer, out_path):
@@ -133,25 +134,44 @@ def plot_coord_histogram(coord_by_layer, out_path):
 def main():
     parser = argparse.ArgumentParser(
         description='Per-layer periodic Delaunay triangulation of a vortex lattice '
-                     'configuration, marking disclinations (coordination number != 6).')
-    parser.add_argument('filename', nargs='?', default='configIni.dat',
-                        help='config_*.dat file printed by the simulation')
+                     'configuration, marking disclinations (coordination number != 6), '
+                     'optionally averaged over time as well as z.')
+    parser.add_argument('pattern', nargs='?', default='configIni.dat',
+                        help='a config file, or a glob pattern matching several '
+                             '(e.g. "config_step_*.dat") to also aggregate defect '
+                             'statistics over time, in addition to z')
+    parser.add_argument('--step-min', type=int, default=None,
+                        help='only use config_step_<N>.dat with N >= this (default: no limit)')
+    parser.add_argument('--step-max', type=int, default=None,
+                        help='only use config_step_<N>.dat with N <= this (default: no limit)')
+    parser.add_argument('--stride', type=int, default=1,
+                        help='use every this-th matched file (default 1: all of them)')
     parser.add_argument('--bond-cutoff', type=float, default=None,
                         help='max Delaunay bond length (default: 1.35*a0, between the 1st '
                              '(a0) and 2nd (a0*sqrt(3)) neighbor shells) -- drops the '
                              'spurious long edges a near-degenerate triangular lattice can '
                              'produce; pass 0 to disable filtering entirely')
+    parser.add_argument('--out-prefix', default=None,
+                        help='output file prefix (default: derived from the matched file(s))')
     parser.add_argument('--show', action='store_true', help='also open an interactive window')
     args = parser.parse_args()
 
-    print(f"Loading configuration from: {args.filename}")
-    try:
-        df = load_config(args.filename)
-    except FileNotFoundError:
-        print(f"Error: File '{args.filename}' not found.")
+    files = gather_configs(args.pattern, args.step_min, args.step_max, args.stride)
+    if not files:
+        rng = ''
+        if args.step_min is not None or args.step_max is not None:
+            rng = f" with step in [{args.step_min}, {args.step_max}]"
+        print(f"Error: no files matched '{args.pattern}'{rng}.")
         sys.exit(1)
 
-    Lx, Ly = find_box_size(args.filename)
+    if len(files) == 1:
+        print(f"Using {files[0]}")
+    else:
+        print(f"Averaging over {len(files)} configurations: "
+              f"{os.path.basename(files[0])} .. {os.path.basename(files[-1])}")
+    label = config_label(files)
+
+    Lx, Ly = find_box_size(files[0])
     if Lx is None:
         print("Error: could not read Box Size Lx/Ly from a sibling simulation.log; "
               "the periodic triangulation needs the box size.")
@@ -160,7 +180,7 @@ def main():
     if args.bond_cutoff is not None:
         bond_cutoff = args.bond_cutoff if args.bond_cutoff > 0 else None
     else:
-        a0 = find_log_value(args.filename, 'Lattice Constant (a0)')
+        a0 = find_log_value(files[0], 'Lattice Constant (a0)')
         if a0:
             bond_cutoff = 1.35 * a0
         else:
@@ -169,43 +189,64 @@ def main():
                   "near-degenerate triangulation (see --bond-cutoff).")
             bond_cutoff = None
 
-    layers = sorted(df['z'].unique())
-    fig, axes = plt.subplots(1, len(layers), figsize=(4.5 * len(layers), 4.5), squeeze=False)
-    axes = axes[0]
+    df0 = load_config(files[0])
+    layers = sorted(df0['z'].unique())
+
+    draw = len(files) == 1
+    if draw:
+        fig, axes = plt.subplots(1, len(layers), figsize=(4.5 * len(layers), 4.5), squeeze=False)
+        axes = axes[0]
+
+    coord_by_layer = {z: [] for z in layers}
+    for fi, fpath in enumerate(files):
+        df = df0 if fi == 0 else load_config(fpath)
+        for zi, z in enumerate(layers):
+            g = df[df['z'] == z]
+            x, y = g['x'].to_numpy(), g['y'].to_numpy()
+            neighbors = periodic_neighbors(x, y, Lx, Ly, bond_cutoff)
+            coord, charge, n_defects, n5, n7, n_other = layer_stats(neighbors)
+            coord_by_layer[z].append(coord)
+            if draw:
+                draw_layer(axes[zi], x, y, Lx, Ly, neighbors, charge)
+                frac = n_defects / len(x)
+                axes[zi].set_title(f'z={z} — {n_defects}/{len(x)} defects ({100*frac:.1f}%)', fontsize=9)
 
     rows = []
-    coord_by_layer = {}
-    for ax, z in zip(axes, layers):
-        g = df[df['z'] == z]
-        x, y = g['x'].to_numpy(), g['y'].to_numpy()
-        neighbors = periodic_neighbors(x, y, Lx, Ly, bond_cutoff)
-        n_defects, n5, n7, n_other, coord = plot_layer(ax, x, y, Lx, Ly, neighbors)
-        frac = n_defects / len(x)
-        rows.append((z, len(x), n_defects, frac, n5, n7, n_other))
-        coord_by_layer[z] = coord
-        ax.set_title(f'z={z} — {n_defects}/{len(x)} defects ({100*frac:.1f}%)', fontsize=9)
-        print(f"  z={z}: N={len(x)}  defects={n_defects} ({100*frac:.2f}%)  "
+    for z in layers:
+        pooled = np.concatenate(coord_by_layer[z])
+        n_defects = int(np.sum(pooled != 6))
+        n5 = int(np.sum(pooled == 5))
+        n7 = int(np.sum(pooled == 7))
+        n_other = n_defects - n5 - n7
+        frac = n_defects / len(pooled)
+        rows.append((z, len(pooled), n_defects, frac, n5, n7, n_other))
+        print(f"  z={z}: N={len(pooled)}  defects={n_defects} ({100*frac:.2f}%)  "
               f"5-fold={n5}  7-fold={n7}  other={n_other}")
 
     total_N = sum(r[1] for r in rows)
     total_defects = sum(r[2] for r in rows)
     print(f"Total: {total_defects}/{total_N} defects ({100*total_defects/total_N:.2f}%) "
-          f"across {len(layers)} layers")
+          f"across {len(layers)} layer(s), {len(files)} configuration(s)")
 
-    fig.suptitle(f'Delaunay triangulation & disclinations — {os.path.basename(args.filename)}')
-    fig.tight_layout()
+    base = default_out_prefix(files, args.out_prefix)
 
-    base, _ = os.path.splitext(args.filename)
-    out_path = base + '_disclinations.png'
-    fig.savefig(out_path, dpi=150)
-    print(f"Saved {out_path}")
+    if draw:
+        fig.suptitle(f'Delaunay triangulation & disclinations — {label}')
+        fig.tight_layout()
+        out_path = base + '_disclinations.png'
+        fig.savefig(out_path, dpi=150)
+        print(f"Saved {out_path}")
+    else:
+        print("Skipping the triangulation plot for multi-config averaging "
+              "(bond network only makes sense for one snapshot at a time).")
 
     dat_path = base + '_disclinations.dat'
     np.savetxt(dat_path, np.array(rows),
                header='z  N  n_defects  defect_fraction  n_5fold  n_7fold  n_other', comments='')
     print(f"Saved {dat_path}")
 
-    plot_coord_histogram(coord_by_layer, base + '_coord_hist.png')
+    coord_by_layer_pooled = {z: np.concatenate(v) for z, v in coord_by_layer.items()}
+    plot_coord_histogram(coord_by_layer_pooled, base + '_coord_hist.png')
 
     if args.show:
         plt.show()

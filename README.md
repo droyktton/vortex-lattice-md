@@ -88,9 +88,10 @@ snapshots) rather than just one:
 |-----------------------------------------------|----------------|---------------------------------|
 | The lattice / flux lines                      | `vizconfig.py` | one snapshot                    |
 | Positional order: g(r), S(k), S(q)            | `analyze.py`   | one snapshot (or many, see below) |
-| Topological defects: disclinations            | `disclinations.py` | one snapshot                |
-| Diffusion: MSD vs t                           | `msd.py`       | a trajectory (small `--print-interval`) |
+| Topological defects: disclinations            | `disclinations.py` | one snapshot (or many)     |
+| Diffusion: MSD vs t, and D                    | `msd.py`       | a trajectory (small `--print-interval`) |
 | Compare a quantity across runs (e.g. vs T)    | `compare.py`   | one `.dat` per run              |
+| All of the above across a temperature sweep   | `tsweep.py`    | just `vortex_sim`; it drives the rest |
 
 For a trajectory, run with a small `--print-interval` so there are enough
 `config_step_*.dat` files to work with, e.g. `./vortex_sim --steps 500
@@ -166,6 +167,10 @@ compute. `--dq` (S(q) bin width) defaults to the finer of `2π/Lx`, `2π/Ly`.
 ```sh
 python3 disclinations.py config_step_499.dat
 python3 disclinations.py config_step_499.dat --show
+
+# aggregate defect statistics over an equilibrated trajectory too (same
+# --step-min/--step-max/--stride convention as analyze.py):
+python3 disclinations.py "config_step_*.dat" --step-min 1500 --step-max 3000 --stride 10
 ```
 
 Requires `scipy` (`scipy.spatial.Delaunay`). For each layer, triangulates
@@ -177,13 +182,17 @@ coordination number isn't 6 — a disclination, with topological charge
 
 - `<name>_disclinations.png` — one panel per layer: the bond network in
   gray, 5-fold sites (charge +1) in blue, 7-fold (charge −1) in red, and
-  anything more exotic in orange.
+  anything more exotic in orange. **Single-snapshot mode only** — a bond
+  network doesn't have a meaningful "average" across time, so this plot is
+  skipped when the first argument is a glob pattern matching more than one
+  file (a console note says so).
 - `<name>_disclinations.dat` — per layer: N, defect count, defect fraction,
-  and the 5-fold/7-fold/other breakdown. The total defect count across all
-  layers is also printed to the console.
+  and the 5-fold/7-fold/other breakdown, pooled across every matched
+  configuration in multi-config mode. The total defect count/fraction
+  across all layers (and configs) is also printed to the console.
 - `<name>_coord_hist.png` — coordination-number histogram, grouped bars per
-  layer. A perfect crystal is a single spike at 6; a liquid spreads out
-  around it, roughly symmetric between 5- and 7-fold.
+  layer, pooled the same way. A perfect crystal is a single spike at 6; a
+  liquid spreads out around it, roughly symmetric between 5- and 7-fold.
 
 A near-perfect triangular lattice is close to the worst case for Delaunay:
 every hexagonal ring of 6 neighbors sits almost exactly on a circle around
@@ -206,6 +215,7 @@ g(r)/S(q)/MSD already pointed to.
 python3 msd.py                                                 # every snapshot as a time origin, full window
 python3 msd.py --window 20 --origin-spacing 5                   # fixed 20-snapshot window, origins every 5 snapshots
 python3 msd.py --window 20 --origin-spacing 5 --t0-min 10       # ...and skip the first 10 snapshots (equilibration)
+python3 msd.py --fit-tmin 5                                     # fit D to the t >= 5 portion explicitly
 ```
 
 Computes MSD(Δt) = ⟨[r(t₀+Δt) − r(t₀)]²⟩, averaged over every vortex and over
@@ -219,15 +229,23 @@ huge jump — this assumes true displacement between consecutive *saved*
 snapshots stays under half the box, so don't set `--print-interval` too
 coarse relative to how fast the vortices actually move. Any trailing
 snapshot that breaks uniform step spacing (e.g. the always-saved final step)
-is dropped automatically. Produces:
+is dropped automatically. Also fits a diffusion constant D from the late-time
+(already-diffusive) slope: MSD ≈ 4Dt in 2D, so D = slope/4; `--fit-tmin`
+picks where the fit starts (default: half of the largest available Δt) —
+check `msd_windows.png` first, the fit is meaningless if `t_min` still falls
+in the short-time non-diffusive rise. Pass `--fit-tmin -1` to skip it.
+Produces:
 
 - `msd.dat` — two columns: t, MSD (averaged over windows).
-- `msd.png` — that average, vs t.
+- `msd.png` — that average, vs t, with the D fit overlaid as a dashed line.
 - `msd_windows.png` — every window's own MSD(Δt) curve, colored by its start
   time t₀, plus the average in black. Use this to check convergence to
   steady state: if the earliest (darkest) curves sit apart from the rest,
   the trajectory hadn't equilibrated yet at those t₀ — raise `--t0-min` to
   exclude them.
+- `msd_diffusion.dat` — one row: D, the fit's `t_min`, slope, intercept.
+  D≈0 (down to the fit's own noise floor) means a solid; a clearly nonzero,
+  stable D means a liquid.
 
 ## Compare across runs
 
@@ -239,13 +257,71 @@ python3 compare.py --out msd_vs_T.png --xlabel "t" --ylabel "MSD" --title "MSD v
     T=0.01:runs/T_0.01/msd.dat T=0.02:runs/T_0.02/msd.dat T=0.03:runs/T_0.03/msd.dat
 
 python3 compare.py --out sq_vs_T.png --xlabel q --ylabel "S(q)" --logy --hline 1.0 \
-    T=0.01:runs/T_0.01/config_step_2999_sq.dat T=0.02:runs/T_0.02/config_step_2999_sq.dat
+    T=0.01:runs/T_0.01/equil_sq.dat T=0.02:runs/T_0.02/equil_sq.dat
 ```
 
 Each positional argument is `label:path`. Useful for exactly the kind of
 question this project keeps coming back to: at what temperature does the
 lattice melt? (MSD turns from saturating to linear, and S(q)'s higher-order
-peaks disappear, at the same T.)
+peaks disappear, at the same T.) `tsweep.py` below runs the sweep and does
+this comparison step for you.
+
+## Temperature sweeps
+
+```sh
+python3 tsweep.py 0.005 0.01 0.015 0.02 0.03
+```
+
+Runs the whole pipeline — `vortex_sim`, then `analyze.py`, `msd.py`,
+`disclinations.py` on the equilibrated part of each run — once per
+temperature, and collects the melting-relevant scalars (D, disclination
+fraction, S(q) peak height) into one table plotted vs T. Concretely, for
+each T this:
+
+1. Runs `./vortex_sim --T <T> ...` in its own `runs/T_<T>/` folder.
+2. Runs `analyze.py "config_step_*.dat" --step-min ... --stride ... --out-prefix equil`
+   (g(r)/S(k)/S(q), time-averaged over the equilibrated part) in that folder.
+3. Runs `msd.py --window ... --origin-spacing ... --t0-min ...` (MSD + the D fit).
+4. Runs `disclinations.py "config_step_*.dat" --step-min ... --stride ... --out-prefix equil`
+   (pooled defect statistics over the same equilibrated part).
+5. Reads `D` from `msd_diffusion.dat`, the overall defect fraction from
+   `equil_disclinations.dat`, and `max(S(q))` from `equil_sq.dat`.
+
+Produces, in `--out-dir` (default `runs/`):
+
+- `summary.dat` — one row per T: `T D defect_fraction Sq_max`.
+- `summary_D_vs_T.png`, `summary_defects_vs_T.png`, `summary_Sqmax_vs_T.png`.
+
+**Equilibration time is very T-dependent** — it grows sharply near the
+melting transition (critical slowing down) and can be much shorter far from
+it — so a single `--steps`/`--step-min` for every temperature is rarely
+right for a serious sweep. Both accept either one value (applied to every T)
+or one value per T, positionally matched to the `temperatures` list:
+
+```sh
+python3 tsweep.py 0.005 0.01 0.012 0.015 0.02 \
+    --steps      2000 3000 6000 6000 3000 \
+    --step-min   500  1000 3000 3000 1000
+```
+
+Give temperatures close to a suspected transition more `--steps` (to reach
+equilibrium at all) and a later `--step-min` (to actually discard the longer
+transient), and cheaper/shorter runs to temperatures you're confident are
+far from it. `--step-min` defaults to half of that T's own `--steps` if not
+given. `--stride` (also broadcastable per-T) controls the same
+analyze.py/disclinations.py subsampling cost tradeoff described above.
+
+Other flags: `--nx`/`--ny`/`--nz`/`--print-interval` (shared by every T),
+`--msd-window`/`--msd-origin-spacing`, and `--skip-sim` to rerun just the
+analysis steps against `config_step_*.dat` files a previous sweep already
+produced (e.g. while retuning `--stride` or fit parameters, without repaying
+the simulation cost).
+
+**Cost**: `analyze.py`'s S(k) is O(grid_size × N) per (config, layer) — the
+dominant cost of the whole sweep. A run of the size used to validate all of
+this (30×30×4, `--stride 10`, ~10 equilibrated configs per T) took a few
+minutes per T; budget accordingly for more temperatures, finer `--stride`,
+or larger `--kmax`.
 
 ## End-to-end example
 
@@ -266,6 +342,8 @@ python3 vizconfig.py config_step_999.dat --show
 - `vizconfig.py` — visualization
 - `analyze.py` — g(r), S(k), and S(q), z-averaged (and optionally time-averaged)
 - `disclinations.py` — per-layer Delaunay triangulation and disclinations
-- `msd.py` — mean squared displacement vs time
+  (also optionally time-averaged)
+- `msd.py` — mean squared displacement vs time, and the diffusion constant D
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
+- `tsweep.py` — run the full pipeline across a temperature sweep
 - `verlattice.gnu` — gnuplot alternative

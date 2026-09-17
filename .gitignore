@@ -7,8 +7,13 @@ configIni.dat
 config_step_*.dat
 simulation.log
 msd.dat
+msd_diffusion.dat
 *_sq*.dat
 *_disclinations.dat
+
+# tsweep.py output
+runs/
+summary.dat
 
 # Generated plots
 *.png

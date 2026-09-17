@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import glob
 import argparse
 
 import numpy as np
@@ -50,6 +51,52 @@ def parse_step(filename):
     configIni.dat) if it doesn't match that pattern."""
     m = re.search(r'config_step_(\d+)\.dat$', os.path.basename(filename))
     return int(m.group(1)) if m else None
+
+
+def gather_configs(pattern, step_min, step_max, stride=1):
+    """Resolve `pattern` to a sorted list of config files. Shared by
+    analyze.py and disclinations.py, whose first argument accepts either a
+    single config file or a glob pattern to average/aggregate over time.
+
+    A literal filename with no glob metacharacter (e.g. the default
+    'configIni.dat') is used as-is, whatever it's named.
+
+    A wildcard pattern (e.g. 'config_step_*.dat') is expected to match
+    trajectory snapshots, so results are restricted to files that parse as
+    config_step_<N>.dat and fall in [step_min, step_max], then subsampled
+    every `stride`-th one. This also matters because the pattern can
+    accidentally pick up a script's OWN outputs sitting in the same
+    directory (config_step_<N>_sq.dat, _gr.png, ...) -- those don't match
+    the strict step pattern and are silently dropped rather than smuggled in
+    unfiltered."""
+    if not any(c in pattern for c in '*?['):
+        return [pattern]
+
+    dated = sorted((parse_step(f), f) for f in glob.glob(pattern) if parse_step(f) is not None)
+    in_range = [f for s, f in dated
+                if (step_min is None or s >= step_min) and (step_max is None or s <= step_max)]
+    return in_range[::stride]
+
+
+def config_label(files):
+    """Short label for plot titles: one filename, or 'N configs, steps A-B'."""
+    if len(files) == 1:
+        return os.path.basename(files[0])
+    s0, s1 = parse_step(files[0]), parse_step(files[-1])
+    return f"{len(files)} configs, steps {s0}-{s1}" if s0 is not None else f"{len(files)} configs"
+
+
+def default_out_prefix(files, out_prefix=None):
+    """Where multi-config scripts (analyze.py, disclinations.py) write their
+    output, absent an explicit --out-prefix."""
+    if out_prefix:
+        return out_prefix
+    if len(files) == 1:
+        base, _ = os.path.splitext(files[0])
+        return base
+    d = os.path.dirname(files[0]) or '.'
+    s0, s1 = parse_step(files[0]), parse_step(files[-1])
+    return os.path.join(d, f"avg_step{s0}-{s1}" if s0 is not None else "avg")
 
 
 def unwrap_along_z(xs, ys, Lx, Ly):

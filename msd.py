@@ -99,9 +99,29 @@ def compute_msd(ux, uy, origin_spacing, window, t0_min=0):
     return lags, msd, origins, msd_per_origin
 
 
-def plot_msd(t, msd, out_path, time_label):
+def fit_diffusion_constant(t, msd, t_min):
+    """Linear fit to MSD(t) for t >= t_min: MSD ~ 4*D*t for 2D diffusion
+    (each vortex diffuses within its own layer plane), so D = slope/4. Only
+    meaningful once MSD has left the short-time non-diffusive regime (the
+    caged/vibrational rise visible in msd_windows.png) -- t_min should be
+    chosen past that crossover, not from t=0. Returns None if fewer than 2
+    points qualify."""
+    mask = t >= t_min
+    if mask.sum() < 2:
+        return None
+    slope, intercept = np.polyfit(t[mask], msd[mask], 1)
+    return slope / 4.0, slope, intercept
+
+
+def plot_msd(t, msd, out_path, time_label, fit=None, t_min=None):
     plt.figure(figsize=(7, 5))
-    plt.plot(t, msd, marker='o', markersize=3)
+    plt.plot(t, msd, marker='o', markersize=3, label='MSD' if fit is not None else None)
+    if fit is not None:
+        D, slope, intercept = fit
+        fit_t = t[t >= t_min]
+        plt.plot(fit_t, slope * fit_t + intercept, '--', color='tab:red',
+                  label=f'fit (t≥{t_min:.3g}): D={D:.4g}')
+        plt.legend()
     plt.xlabel(time_label)
     plt.ylabel(r'MSD $= \langle [r(t_0+\Delta t) - r(t_0)]^2 \rangle$')
     plt.title('Vortex mean squared displacement')
@@ -150,6 +170,11 @@ def main():
     parser.add_argument('--t0-min', type=int, default=0,
                         help='skip this many snapshots before the first allowed reference time t0 '
                              '(default 0); use it to discard the initial equilibration transient')
+    parser.add_argument('--fit-tmin', type=float, default=None,
+                        help='fit a diffusion constant D from the MSD slope at t >= this (MSD ~ '
+                             '4*D*t in 2D); default: half of the largest available t. Check '
+                             'msd_windows.png first -- t must be past the short-time non-diffusive '
+                             'rise, or D comes out meaningless. Pass --fit-tmin -1 to skip the fit.')
     parser.add_argument('--out-prefix', default=None,
                         help='output file prefix (default: msd, next to the snapshots)')
     parser.add_argument('--show', action='store_true', help='also open an interactive window')
@@ -194,7 +219,23 @@ def main():
     np.savetxt(out_prefix + '.dat', np.column_stack([t_axis, msd]),
                header='t  MSD', comments='')
     print(f"Saved {out_prefix}.dat")
-    plot_msd(t_axis, msd, out_prefix + '.png', time_label)
+
+    fit = None
+    fit_tmin = args.fit_tmin
+    if fit_tmin != -1:
+        if fit_tmin is None:
+            fit_tmin = t_axis[-1] / 2
+        fit = fit_diffusion_constant(t_axis, msd, fit_tmin)
+        if fit is None:
+            print(f"Warning: --fit-tmin {fit_tmin:.3g} leaves fewer than 2 points; skipping the D fit.")
+        else:
+            D, slope, intercept = fit
+            print(f"Diffusion constant: D={D:.6g} (fit to t >= {fit_tmin:.3g})")
+            np.savetxt(out_prefix + '_diffusion.dat', [[D, fit_tmin, slope, intercept]],
+                       header='D  fit_tmin  slope  intercept', comments='')
+            print(f"Saved {out_prefix}_diffusion.dat")
+
+    plot_msd(t_axis, msd, out_prefix + '.png', time_label, fit, fit_tmin)
     plot_msd_windows(t_axis, msd_per_origin, t0_physical, msd, out_prefix + '_windows.png', time_label)
 
     if args.show:
