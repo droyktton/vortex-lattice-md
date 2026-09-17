@@ -88,6 +88,7 @@ snapshots) rather than just one:
 |-----------------------------------------------|----------------|---------------------------------|
 | The lattice / flux lines                      | `vizconfig.py` | one snapshot                    |
 | Positional order: g(r), S(k), S(q)            | `analyze.py`   | one snapshot (or many, see below) |
+| Topological defects: disclinations            | `disclinations.py` | one snapshot                |
 | Diffusion: MSD vs t                           | `msd.py`       | a trajectory (small `--print-interval`) |
 | Compare a quantity across runs (e.g. vs T)    | `compare.py`   | one `.dat` per run              |
 
@@ -160,6 +161,40 @@ whatever `2π/Lx`, `2π/Ly` give you; `--kmax` (default: ~4 reciprocal shells
 based on `a0`, read from `simulation.log`) only controls how many shells to
 compute. `--dq` (S(q) bin width) defaults to the finer of `2π/Lx`, `2π/Ly`.
 
+## Analyze (disclinations)
+
+```sh
+python3 disclinations.py config_step_499.dat
+python3 disclinations.py config_step_499.dat --show
+```
+
+Requires `scipy` (`scipy.spatial.Delaunay`). For each layer, triangulates
+the vortex positions under periodic boundary conditions (the standard
+ghost-image trick: tile into the 8 neighboring periodic copies, triangulate
+the padded point set, fold the edges back) and marks every vortex whose
+coordination number isn't 6 — a disclination, with topological charge
+6 − coordination. Produces:
+
+- `<name>_disclinations.png` — one panel per layer: the bond network in
+  gray, 5-fold sites (charge +1) in blue, 7-fold (charge −1) in red, and
+  anything more exotic in orange.
+- `<name>_disclinations.dat` — per layer: N, defect count, defect fraction,
+  and the 5-fold/7-fold/other breakdown.
+
+A near-perfect triangular lattice is close to the worst case for Delaunay:
+every hexagonal ring of 6 neighbors sits almost exactly on a circle around
+the central site, so the triangulation there is nearly degenerate, and
+floating point can pick the "wrong" diagonal and wire up a spurious bond to
+a *second*-shell neighbor (distance a0√3) instead of a real first-shell one
+(distance a0) — inflating the defect count with numerical artifacts, not
+real physics. `--bond-cutoff` (default `1.35*a0`, between the two shells)
+drops Delaunay edges longer than that; pass `--bond-cutoff 0` to disable it
+and see the raw (noisier) triangulation. Verified against the temperature
+sweep from `compare.py`: 0% defects at T=0.005 (a clean hexagonal mesh with
+no colored sites at all), climbing smoothly through ~5-8% at T=0.01 to
+~44-46% at T=0.03 — consistent with the same T=0.01–0.015 melting range
+g(r)/S(q)/MSD already pointed to.
+
 ## Analyze (mean squared displacement)
 
 ```sh
@@ -226,6 +261,7 @@ python3 vizconfig.py config_step_999.dat --show
 - `Makefile` — build targets
 - `vizconfig.py` — visualization
 - `analyze.py` — g(r), S(k), and S(q), z-averaged (and optionally time-averaged)
+- `disclinations.py` — per-layer Delaunay triangulation and disclinations
 - `msd.py` — mean squared displacement vs time
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `verlattice.gnu` — gnuplot alternative

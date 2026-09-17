@@ -8,6 +8,7 @@ config_step_*.dat
 simulation.log
 msd.dat
 *_sq*.dat
+*_disclinations.dat
 
 # Generated plots
 *.png
