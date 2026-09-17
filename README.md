@@ -87,7 +87,7 @@ snapshots) rather than just one:
 | I want to see...                  | Script         | Needs                          |
 |------------------------------------|----------------|---------------------------------|
 | The lattice / flux lines           | `vizconfig.py` | one snapshot                    |
-| Positional order: g(r), S(k)       | `analyze.py`   | one snapshot                    |
+| Positional order: g(r), S(k), S(q) | `analyze.py`   | one snapshot                    |
 | Diffusion: MSD vs t                | `msd.py`       | a trajectory (small `--print-interval`) |
 
 For a trajectory, run with a small `--print-interval` so there are enough
@@ -113,7 +113,7 @@ Requires `pandas` and `matplotlib`. Produces:
 periodic unwrapping, so lines anchored near a box edge can show a spurious
 diagonal jump).
 
-## Analyze (g(r), S(k))
+## Analyze (g(r), S(k), S(q))
 
 ```sh
 python3 analyze.py config_step_499.dat
@@ -130,10 +130,17 @@ averages both over the z-stack. Produces:
   trivial peak equal to N); a triangular lattice shows hexagonal rings of
   Bragg-like peaks. Speckle in the background reflects the small number of
   z-layers being averaged (no time averaging is done).
+- `<name>_sq.png` / `<name>_sq.dat` — S(q), the azimuthal average of
+  S(kx, ky) over rings of fixed q = √(kx²+ky²) (k=0 excluded), the k-space
+  analog of g(r). A liquid shows one broad principal peak decaying to
+  S(q)→1; a crystal shows sharp, much taller peaks that don't decay. The
+  lowest q bin is noisy (very few grid points fall that close to the
+  origin) — ignore it.
 
 `--kmax` defaults to about 4 reciprocal lattice shells based on `a0` (read
 from `simulation.log`); `--kres` (grid points per k-axis) trades runtime for
-resolution — the direct summation is O(kres² × N) per layer.
+resolution — the direct summation is O(kres² × N) per layer. `--dq` (S(q)
+bin width) defaults to the k-grid's own spacing.
 
 ## Analyze (mean squared displacement)
 
@@ -182,6 +189,6 @@ python3 vizconfig.py config_step_999.dat --show
 - `main.cu` — the simulation
 - `Makefile` — build targets
 - `vizconfig.py` — visualization
-- `analyze.py` — g(r) and S(k), z-averaged
+- `analyze.py` — g(r), S(k), and S(q), z-averaged
 - `msd.py` — mean squared displacement vs time
 - `verlattice.gnu` — gnuplot alternative

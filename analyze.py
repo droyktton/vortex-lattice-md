@@ -43,6 +43,24 @@ def compute_sk_layer(x, y, k_max, n_k):
     return KX, KY, S.reshape(KX.shape)
 
 
+def radial_average_sk(KX, KY, S, dq, q_max):
+    """Azimuthal average of S(kx, ky) over rings of fixed q = sqrt(kx^2+ky^2),
+    the same way g(r) is already a radial average in real space. Excludes the
+    trivial k=0 point (S(0) = N)."""
+    q = np.hypot(KX, KY).ravel()
+    s = S.ravel()
+    mask = q > 1e-9
+    q, s = q[mask], s[mask]
+
+    bins = np.arange(0.0, q_max + dq, dq)
+    sum_s, edges = np.histogram(q, bins=bins, weights=s)
+    counts, _ = np.histogram(q, bins=bins)
+    q_mid = 0.5 * (edges[:-1] + edges[1:])
+    with np.errstate(invalid='ignore'):
+        s_radial = sum_s / counts
+    return q_mid, s_radial
+
+
 def plot_gr(r, g, filename, out_path):
     plt.figure(figsize=(7, 5))
     plt.plot(r, g)
@@ -76,10 +94,25 @@ def plot_sk(KX, KY, S, filename, out_path):
     print(f"Saved {out_path}")
 
 
+def plot_sq(q, s, filename, out_path):
+    plt.figure(figsize=(7, 5))
+    plt.plot(q, s)
+    plt.axhline(1.0, color='gray', linestyle='--', linewidth=1)
+    plt.yscale('log')
+    plt.xlabel('q')
+    plt.ylabel('S(q)')
+    plt.title(f'Structure factor, radially averaged (z-averaged) — {os.path.basename(filename)}')
+    plt.grid(True, which='both')
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Compute the z-averaged radial distribution function g(r) '
-                     'and structure factor S(k) from a vortex lattice configuration file.')
+        description='Compute the z-averaged radial distribution function g(r), '
+                     'structure factor S(k), and its radial average S(q) '
+                     'from a vortex lattice configuration file.')
     parser.add_argument('filename', nargs='?', default='configIni.dat',
                         help='config_*.dat file printed by the simulation')
     parser.add_argument('--dr', type=float, default=0.05, help='g(r) bin width (default 0.05)')
@@ -88,6 +121,8 @@ def main():
     parser.add_argument('--kmax', type=float, default=None,
                         help='S(k) max |kx|,|ky| (default: ~4 Brillouin zones based on a0)')
     parser.add_argument('--kres', type=int, default=201, help='S(k) grid points per axis (default 201)')
+    parser.add_argument('--dq', type=float, default=None,
+                        help='S(q) radial bin width (default: matches the k-grid spacing, 2*kmax/(kres-1))')
     parser.add_argument('--show', action='store_true', help='also open interactive windows')
     args = parser.parse_args()
 
@@ -131,9 +166,15 @@ def main():
     gr_avg = np.mean(gr_list, axis=0)
     sk_avg = np.mean(sk_list, axis=0)
 
+    dq = args.dq if args.dq is not None else 2 * k_max / (args.kres - 1)
+    q_mid, sq_avg = radial_average_sk(KX, KY, sk_avg, dq, k_max)
+
     base, _ = os.path.splitext(args.filename)
     plot_gr(r_mid, gr_avg, args.filename, base + '_gr.png')
     plot_sk(KX, KY, sk_avg, args.filename, base + '_sk.png')
+    plot_sq(q_mid, sq_avg, args.filename, base + '_sq.png')
+    np.savetxt(base + '_sq.dat', np.column_stack([q_mid, sq_avg]), header='q  S(q)', comments='')
+    print(f"Saved {base}_sq.dat")
 
     if args.show:
         plt.show()
