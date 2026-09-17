@@ -45,6 +45,13 @@ def find_box_size(filename):
     return Lx, Ly
 
 
+def parse_step(filename):
+    """Extract N from a config_step_<N>.dat filename, or None (e.g. for
+    configIni.dat) if it doesn't match that pattern."""
+    m = re.search(r'config_step_(\d+)\.dat$', os.path.basename(filename))
+    return int(m.group(1)) if m else None
+
+
 def unwrap_along_z(xs, ys, Lx, Ly):
     """A flux line's in-plane position is folded into [0, L) independently at
     each layer, so consecutive layers can appear to jump across the whole box.

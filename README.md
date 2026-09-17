@@ -84,11 +84,12 @@ Every measurement is a separate Python script over the `.dat` files
 except that a couple of them need a *trajectory* (several evenly spaced
 snapshots) rather than just one:
 
-| I want to see...                  | Script         | Needs                          |
-|------------------------------------|----------------|---------------------------------|
-| The lattice / flux lines           | `vizconfig.py` | one snapshot                    |
-| Positional order: g(r), S(k), S(q) | `analyze.py`   | one snapshot                    |
-| Diffusion: MSD vs t                | `msd.py`       | a trajectory (small `--print-interval`) |
+| I want to see...                            | Script         | Needs                          |
+|-----------------------------------------------|----------------|---------------------------------|
+| The lattice / flux lines                      | `vizconfig.py` | one snapshot                    |
+| Positional order: g(r), S(k), S(q)            | `analyze.py`   | one snapshot (or many, see below) |
+| Diffusion: MSD vs t                           | `msd.py`       | a trajectory (small `--print-interval`) |
+| Compare a quantity across runs (e.g. vs T)    | `compare.py`   | one `.dat` per run              |
 
 For a trajectory, run with a small `--print-interval` so there are enough
 `config_step_*.dat` files to work with, e.g. `./vortex_sim --steps 500
@@ -118,10 +119,20 @@ diagonal jump).
 ```sh
 python3 analyze.py config_step_499.dat
 python3 analyze.py config_step_499.dat --dr 0.02 --kmax 15 --show
+
+# average over time too, once the trajectory has equilibrated:
+python3 analyze.py "config_step_*.dat" --step-min 1500 --step-max 3000
+python3 analyze.py "config_step_*.dat" --step-min 1500 --step-max 3000 --stride 10
 ```
 
 Computes, per layer, the 2D radial distribution function g(r) and the structure factor
-S(k) = |Σⱼ exp(-i k·rⱼ)|²/N, then averages both over the z-stack. S(k) is
+S(k) = |Σⱼ exp(-i k·rⱼ)|²/N, then averages both over the z-stack (and, if the
+first argument is a glob pattern like `"config_step_*.dat"` instead of one
+file, over every matching snapshot too — filtered to `--step-min`/
+`--step-max` so you can pick out just the equilibrated part of a run, and
+thinned by `--stride` since S(k) is the expensive part: it's O(grid_size × N)
+per (config, layer), so averaging over many configurations at full
+resolution can take minutes). S(k) is
 evaluated only at the box's own reciprocal lattice, kx = 2πm/Lx, ky = 2πn/Ly
 for integer m, n — the only k-points where summing over one periodic cell
 exactly reproduces the coherent scattering of the infinite PBC-tiled system
@@ -179,6 +190,24 @@ is dropped automatically. Produces:
   the trajectory hadn't equilibrated yet at those t₀ — raise `--t0-min` to
   exclude them.
 
+## Compare across runs
+
+`msd.dat` and `<name>_sq.dat` are both plain two-column (x, y) text files, so
+overlaying them from different runs — e.g. a temperature sweep — is just:
+
+```sh
+python3 compare.py --out msd_vs_T.png --xlabel "t" --ylabel "MSD" --title "MSD vs T" \
+    T=0.01:runs/T_0.01/msd.dat T=0.02:runs/T_0.02/msd.dat T=0.03:runs/T_0.03/msd.dat
+
+python3 compare.py --out sq_vs_T.png --xlabel q --ylabel "S(q)" --logy --hline 1.0 \
+    T=0.01:runs/T_0.01/config_step_2999_sq.dat T=0.02:runs/T_0.02/config_step_2999_sq.dat
+```
+
+Each positional argument is `label:path`. Useful for exactly the kind of
+question this project keeps coming back to: at what temperature does the
+lattice melt? (MSD turns from saturating to linear, and S(q)'s higher-order
+peaks disappear, at the same T.)
+
 ## End-to-end example
 
 ```sh
@@ -196,6 +225,7 @@ python3 vizconfig.py config_step_999.dat --show
 - `main.cu` — the simulation
 - `Makefile` — build targets
 - `vizconfig.py` — visualization
-- `analyze.py` — g(r), S(k), and S(q), z-averaged
+- `analyze.py` — g(r), S(k), and S(q), z-averaged (and optionally time-averaged)
 - `msd.py` — mean squared displacement vs time
+- `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `verlattice.gnu` — gnuplot alternative

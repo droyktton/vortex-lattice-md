@@ -1,5 +1,6 @@
 import sys
 import os
+import glob
 import argparse
 
 import numpy as np
@@ -7,7 +8,32 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
-from vizconfig import load_config, find_box_size, find_log_value
+from vizconfig import load_config, find_box_size, find_log_value, parse_step
+
+
+def gather_configs(pattern, step_min, step_max, stride=1):
+    """Resolve `pattern` to a sorted list of config files.
+
+    A literal filename with no glob metacharacter (e.g. the default
+    'configIni.dat') is used as-is, whatever it's named.
+
+    A wildcard pattern (e.g. 'config_step_*.dat') is expected to match
+    trajectory snapshots, so results are restricted to files that parse as
+    config_step_<N>.dat and fall in [step_min, step_max], then subsampled
+    every `stride`-th one. This also matters because the pattern can
+    accidentally pick up this script's OWN outputs sitting in the same
+    directory (config_step_<N>_sq.dat, _gr.png, ...) -- those don't match
+    the strict step pattern and are silently dropped rather than smuggled in
+    unfiltered. S(k) is the expensive part here, O(grid_size x N) per
+    (config, layer), so a long time range can get costly to average in full;
+    that's what --stride is for."""
+    if not any(c in pattern for c in '*?['):
+        return [pattern]
+
+    dated = sorted((parse_step(f), f) for f in glob.glob(pattern) if parse_step(f) is not None)
+    in_range = [f for s, f in dated
+                if (step_min is None or s >= step_min) and (step_max is None or s <= step_max)]
+    return in_range[::stride]
 
 
 def compute_gr_layer(x, y, Lx, Ly, dr, r_max):
@@ -74,20 +100,20 @@ def radial_average_sk(KX, KY, S, dq, q_max):
     return q_mid, s_radial
 
 
-def plot_gr(r, g, filename, out_path):
+def plot_gr(r, g, label, out_path):
     plt.figure(figsize=(7, 5))
     plt.plot(r, g)
     plt.axhline(1.0, color='gray', linestyle='--', linewidth=1)
     plt.xlabel('r')
     plt.ylabel('g(r)')
-    plt.title(f'Radial distribution function (z-averaged) — {os.path.basename(filename)}')
+    plt.title(f'Radial distribution function (z-averaged) — {label}')
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     print(f"Saved {out_path}")
 
 
-def plot_sk(KX, KY, S, filename, out_path):
+def plot_sk(KX, KY, S, label, out_path):
     plt.figure(figsize=(7, 6))
     # k=0 always equals N (trivial peak); mask it so it doesn't wash out
     # the Bragg peaks on a log color scale.
@@ -101,20 +127,20 @@ def plot_sk(KX, KY, S, filename, out_path):
     plt.xlabel('kx')
     plt.ylabel('ky')
     plt.gca().set_aspect('equal')
-    plt.title(f'Structure factor (z-averaged) — {os.path.basename(filename)}')
+    plt.title(f'Structure factor (z-averaged) — {label}')
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     print(f"Saved {out_path}")
 
 
-def plot_sq(q, s, filename, out_path, title_suffix=''):
+def plot_sq(q, s, label, out_path, title_suffix=''):
     plt.figure(figsize=(7, 5))
     plt.plot(q, s)
     plt.axhline(1.0, color='gray', linestyle='--', linewidth=1)
     plt.yscale('log')
     plt.xlabel('q')
     plt.ylabel('S(q)')
-    plt.title(f'Structure factor, radially averaged{title_suffix} — {os.path.basename(filename)}')
+    plt.title(f'Structure factor, radially averaged{title_suffix} — {label}')
     plt.grid(True, which='both')
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
@@ -123,11 +149,23 @@ def plot_sq(q, s, filename, out_path, title_suffix=''):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compute the z-averaged radial distribution function g(r), '
-                     'structure factor S(k), and its radial average S(q) '
-                     'from a vortex lattice configuration file.')
-    parser.add_argument('filename', nargs='?', default='configIni.dat',
-                        help='config_*.dat file printed by the simulation')
+        description='Compute the radial distribution function g(r), structure factor '
+                     'S(k), and its radial average S(q) from a vortex lattice '
+                     'configuration file, averaged over z and (optionally) over time.')
+    parser.add_argument('pattern', nargs='?', default='configIni.dat',
+                        help='a config file, or a glob pattern matching several '
+                             '(e.g. "config_step_*.dat") to also average over time, '
+                             'in addition to z')
+    parser.add_argument('--step-min', type=int, default=None,
+                        help='only average config_step_<N>.dat with N >= this (default: no limit)')
+    parser.add_argument('--step-max', type=int, default=None,
+                        help='only average config_step_<N>.dat with N <= this (default: no limit); '
+                             'use --step-min/--step-max together to average only equilibrated '
+                             'configurations, once the initial transient has passed')
+    parser.add_argument('--stride', type=int, default=1,
+                        help='use every this-th matched file (default 1: all of them); '
+                             'S(k) is the expensive part here, so a long --step-min/--step-max '
+                             'range may be worth subsampling')
     parser.add_argument('--dr', type=float, default=0.05, help='g(r) bin width (default 0.05)')
     parser.add_argument('--rmax', type=float, default=None,
                         help='g(r) max radius (default: min(Lx,Ly)/2, the minimum-image limit)')
@@ -136,17 +174,29 @@ def main():
                              'the grid itself is fixed by the box size (2*pi/Lx, 2*pi/Ly), not adjustable')
     parser.add_argument('--dq', type=float, default=None,
                         help='S(q) radial bin width (default: finer of 2*pi/Lx, 2*pi/Ly)')
+    parser.add_argument('--out-prefix', default=None,
+                        help='output file prefix (default: derived from the matched file(s))')
     parser.add_argument('--show', action='store_true', help='also open interactive windows')
     args = parser.parse_args()
 
-    print(f"Loading configuration from: {args.filename}")
-    try:
-        df = load_config(args.filename)
-    except FileNotFoundError:
-        print(f"Error: File '{args.filename}' not found.")
+    files = gather_configs(args.pattern, args.step_min, args.step_max, args.stride)
+    if not files:
+        rng = ''
+        if args.step_min is not None or args.step_max is not None:
+            rng = f" with step in [{args.step_min}, {args.step_max}]"
+        print(f"Error: no files matched '{args.pattern}'{rng}.")
         sys.exit(1)
 
-    Lx, Ly = find_box_size(args.filename)
+    if len(files) == 1:
+        print(f"Using {files[0]}")
+        label = os.path.basename(files[0])
+    else:
+        print(f"Averaging over {len(files)} configurations: "
+              f"{os.path.basename(files[0])} .. {os.path.basename(files[-1])}")
+        s0, s1 = parse_step(files[0]), parse_step(files[-1])
+        label = f"{len(files)} configs, steps {s0}-{s1}" if s0 is not None else f"{len(files)} configs"
+
+    Lx, Ly = find_box_size(files[0])
     if Lx is None:
         print("Error: could not read Box Size Lx/Ly from a sibling simulation.log; "
               "g(r) and S(k) need the box size for periodic wrapping and normalization.")
@@ -154,7 +204,7 @@ def main():
 
     r_max = args.rmax if args.rmax is not None else 0.5 * min(Lx, Ly)
 
-    a0 = find_log_value(args.filename, 'Lattice Constant (a0)')
+    a0 = find_log_value(files[0], 'Lattice Constant (a0)')
     if args.kmax is not None:
         k_max = args.kmax
     elif a0:
@@ -163,29 +213,43 @@ def main():
         print("Warning: could not read a0 from simulation.log; defaulting --kmax to 10.0.")
         k_max = 10.0
 
-    layers = sorted(df['z'].unique())
     gr_list, sk_list = [], []
     r_mid = None
     KX = KY = None
-    for z in layers:
-        g = df[df['z'] == z]
-        x, y = g['x'].to_numpy(), g['y'].to_numpy()
-        r_mid, gr = compute_gr_layer(x, y, Lx, Ly, args.dr, r_max)
-        gr_list.append(gr)
-        kx_grid, ky_grid, sk = compute_sk_layer(x, y, Lx, Ly, k_max)
-        sk_list.append(sk)
-        KX, KY = kx_grid, ky_grid
+    for fpath in files:
+        try:
+            df = load_config(fpath)
+        except FileNotFoundError:
+            print(f"Error: File '{fpath}' not found.")
+            sys.exit(1)
+        for z in sorted(df['z'].unique()):
+            g = df[df['z'] == z]
+            x, y = g['x'].to_numpy(), g['y'].to_numpy()
+            r_mid, gr = compute_gr_layer(x, y, Lx, Ly, args.dr, r_max)
+            gr_list.append(gr)
+            kx_grid, ky_grid, sk = compute_sk_layer(x, y, Lx, Ly, k_max)
+            sk_list.append(sk)
+            KX, KY = kx_grid, ky_grid
 
+    print(f"Averaged over {len(gr_list)} (config, layer) samples")
     gr_avg = np.mean(gr_list, axis=0)
     sk_avg = np.mean(sk_list, axis=0)
 
     dq = args.dq if args.dq is not None else min(2 * np.pi / Lx, 2 * np.pi / Ly)
     q_mid, sq_avg = radial_average_sk(KX, KY, sk_avg, dq, k_max)
 
-    base, _ = os.path.splitext(args.filename)
-    plot_gr(r_mid, gr_avg, args.filename, base + '_gr.png')
-    plot_sk(KX, KY, sk_avg, args.filename, base + '_sk.png')
-    plot_sq(q_mid, sq_avg, args.filename, base + '_sq.png')
+    if args.out_prefix:
+        base = args.out_prefix
+    elif len(files) == 1:
+        base, _ = os.path.splitext(files[0])
+    else:
+        d = os.path.dirname(files[0]) or '.'
+        s0, s1 = parse_step(files[0]), parse_step(files[-1])
+        base = os.path.join(d, f"avg_step{s0}-{s1}" if s0 is not None else "avg")
+
+    plot_gr(r_mid, gr_avg, label, base + '_gr.png')
+    plot_sk(KX, KY, sk_avg, label, base + '_sk.png')
+    plot_sq(q_mid, sq_avg, label, base + '_sq.png')
     np.savetxt(base + '_sq.dat', np.column_stack([q_mid, sq_avg]), header='q  S(q)', comments='')
     print(f"Saved {base}_sq.dat")
 

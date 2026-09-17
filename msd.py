@@ -1,6 +1,5 @@
 import sys
 import os
-import re
 import glob
 import argparse
 
@@ -8,17 +7,16 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 
-from vizconfig import load_config, find_box_size, find_log_value
+from vizconfig import load_config, find_box_size, find_log_value, parse_step
 
 
 def gather_snapshots(pattern):
     """Find config_step_<N>.dat files matching `pattern`, sorted by step."""
-    step_re = re.compile(r'config_step_(\d+)\.dat$')
     snaps = []
     for f in glob.glob(pattern):
-        m = step_re.search(os.path.basename(f))
-        if m:
-            snaps.append((int(m.group(1)), f))
+        step = parse_step(f)
+        if step is not None:
+            snaps.append((step, f))
     snaps.sort(key=lambda t: t[0])
     return snaps
 
