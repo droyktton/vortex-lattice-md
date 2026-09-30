@@ -40,7 +40,10 @@ make direct     # only the direct O(N^2) version
 make run        # build + run the cell-list version
 ```
 
-If your system's Random123 install doesn't include `boxmuller.hpp`, point at
+If your system's Random123 install doesn't include `boxmuller.hpp`, the
+Makefile falls back to a checkout next to this repo
+(`<parent of repo>/random123/include`, e.g. `git clone
+https://github.com/DEShawResearch/random123.git ../random123`), or point it at
 one that does:
 
 ```sh
