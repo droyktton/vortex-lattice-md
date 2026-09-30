@@ -22,3 +22,7 @@ summary.dat
 # Python
 __pycache__/
 *.pyc
+slurm/logs/*.out
+# ...except the curated example results shipped with the SLURM demo
+!slurm/example_output/**/*.png
+!slurm/example_output/**/summary.dat

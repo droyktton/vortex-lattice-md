@@ -421,4 +421,6 @@ python3 vizconfig.py config_step_999.dat --show
 - `msd.py` — mean squared displacement vs time, and the diffusion constant D
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `tsweep.py` — run the full pipeline across a temperature sweep
+- `slurm/` — SLURM scripts to run `tsweep.py` sweeps (one-way and hysteresis)
+  on the GPU cluster; see `slurm/README.md`
 - `verlattice.gnu` — gnuplot alternative
