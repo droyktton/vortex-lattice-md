@@ -12,6 +12,17 @@
 # Defaults are the values the example_output/ runs used.
 
 if [ -n "${PARAMS_FILE:-}" ]; then
+    if [ ! -f "$PARAMS_FILE" ]; then
+        echo "Error: PARAMS_FILE '$PARAMS_FILE' not found" >&2
+        exit 1
+    fi
+    # A full copy of this script as PARAMS_FILE would source itself forever
+    # and hang the job without ever starting vortex_sim.
+    if grep -q 'SIM_ARGS' "$PARAMS_FILE"; then
+        echo "Error: PARAMS_FILE '$PARAMS_FILE' looks like a copy of slurm/params.sh;" \
+             "it should only hold VAR=value lines (e.g. K=2.5)" >&2
+        exit 1
+    fi
     _VORTEX_ENV_OVERRIDES="$(declare -p NX NY NZ A0 K DT CUTOFF SKIN SEED \
         PRINT_INTERVAL MSD_WINDOW MSD_ORIGIN_SPACING 2>/dev/null || true)"
     source "$PARAMS_FILE"

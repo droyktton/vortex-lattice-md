@@ -68,7 +68,8 @@ TSV
 **2. Parameters file** (optional): `VAR=value` lines for whatever you want
 to change from the defaults (see the table under
 [Physical and run parameters](#physical-and-run-parameters)); anything left
-out keeps its default:
+out keeps its default. It holds only `VAR=value` lines; don't copy
+`slurm/params.sh` itself into it:
 
 ```sh
 cat > my_params.sh <<'PARAMS'

@@ -49,4 +49,4 @@ echo "Submitted collect job $COLLECT_JOB (runs once the whole sweep succeeds)"
 echo
 echo "Track with:  squeue -u $USER"
 echo "Logs in:     slurm/logs/sweep_${ARRAY_JOB}_*.out, slurm/logs/collect_${COLLECT_JOB}.out"
-echo "Result in:   runs/summary.dat, runs/summary_*.png"
+echo "Result in:   ${OUT_DIR:-$REPO_ROOT/runs}/summary.dat, summary_*.png"
