@@ -37,6 +37,7 @@ would compile at all.
 | File                  | Purpose                                              |
 |------------------------|-------------------------------------------------------|
 | `env.sh`               | Module loads + env fixes; `source` this, don't run it |
+| `params.sh`            | Physical/run parameters (env-var overridable) for both sweeps |
 | `build.sh`             | Clean rebuild of `vortex_sim`/`vortex_sim_on2`        |
 | `temperatures.tsv`     | The sweep: one `T steps step_min stride` row per temperature |
 | `sweep_array.sbatch`   | One array task = one temperature, on `gpu`, one GPU each |
@@ -107,6 +108,41 @@ each leg depends on the previous one it runs sequentially on a single GPU
 `slurm/logs/hysteresis_<jobid>.out`; results in `runs/hysteresis/`
 (`summary.dat`, `summary_*.png`, one numbered folder per leg). Override the
 inputs with `sbatch --export=ALL,TEMPS_FILE=...,OUT_DIR=... slurm/hysteresis_sweep.sbatch`.
+
+## Physical and run parameters
+
+Both `sweep_array.sbatch` and `hysteresis_sweep.sbatch` take every
+`vortex_sim` parameter from `slurm/params.sh`, which turns environment
+variables into `tsweep.py` flags. Defaults are what the `example_output/`
+runs used:
+
+| Variable             | Meaning                              | Default   |
+|----------------------|--------------------------------------|-----------|
+| `NX`, `NY`, `NZ`     | lattice size (in-plane, layers)      | 30, 30, 4 |
+| `A0`                 | lattice constant                     | 1.0       |
+| `K`                  | inter-layer spring constant          | 0.5       |
+| `DT`                 | timestep                             | 0.01      |
+| `CUTOFF`             | interaction cutoff radius            | 3.0       |
+| `SKIN`               | Verlet skin width                    | 0.5       |
+| `SEED`               | RNG seed                             | 1234567   |
+| `PRINT_INTERVAL`     | steps between snapshots              | 15        |
+| `MSD_WINDOW`         | `msd.py --window` (snapshots)        | 100       |
+| `MSD_ORIGIN_SPACING` | `msd.py --origin-spacing` (snapshots)| 10        |
+
+`T`, `steps`, `step_min` and `stride` still come from the temperatures
+file; `TEMPS_FILE` and `OUT_DIR` pick the file and the output folder. Give
+each parameter set its own `OUT_DIR`, or the runs overwrite each other:
+
+```sh
+sbatch --export=ALL,K=1.5,DT=0.005,OUT_DIR=$PWD/runs/hyst_k1.5 slurm/hysteresis_sweep.sbatch
+K=1.5 OUT_DIR=$PWD/runs/k1.5 slurm/submit_sweep.sh
+```
+
+For many parameters, put `VAR=value` lines in a file and pass
+`PARAMS_FILE=/abs/path/to/file` instead; variables also set in the
+environment win over the file. Each job log starts with a
+`Sim parameters: ...` line showing what it actually used. The wall-time
+limit is an `sbatch` option: add `--time=24:00:00` to the `sbatch` call.
 
 ## Example output
 

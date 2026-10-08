@@ -15,6 +15,7 @@ set -euo pipefail
 REPO_ROOT="$SLURM_SUBMIT_DIR"
 source "$REPO_ROOT/slurm/env.sh"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/slurm/params.sh"
 
 TEMPS_FILE="${TEMPS_FILE:-$REPO_ROOT/slurm/temperatures.tsv}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/runs}"
@@ -30,5 +31,4 @@ python3 "$REPO_ROOT/tsweep.py" "$T" \
     --out-dir "$OUT_DIR" \
     --vortex-sim "$REPO_ROOT/vortex_sim" \
     --steps "$STEPS" --step-min "$STEP_MIN" --stride "$STRIDE" \
-    --nx "${NX:-30}" --ny "${NY:-30}" --nz "${NZ:-4}" \
-    --print-interval "${PRINT_INTERVAL:-15}"
+    "${SIM_ARGS[@]}"

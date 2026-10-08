@@ -101,6 +101,14 @@ def main():
     parser.add_argument('--nx', type=int, default=30)
     parser.add_argument('--ny', type=int, default=30)
     parser.add_argument('--nz', type=int, default=4)
+    parser.add_argument('--a0', type=float, default=1.0, help='lattice constant (default 1.0)')
+    parser.add_argument('--k', type=float, default=0.5,
+                        help='inter-layer spring constant (default 0.5)')
+    parser.add_argument('--dt', type=float, default=0.01, help='timestep (default 0.01)')
+    parser.add_argument('--cutoff', type=float, default=3.0,
+                        help='interaction cutoff radius (default 3.0)')
+    parser.add_argument('--skin', type=float, default=0.5, help='Verlet skin width (default 0.5)')
+    parser.add_argument('--seed', type=int, default=1234567, help='RNG seed (default 1234567)')
     parser.add_argument('--print-interval', type=int, default=15)
     parser.add_argument('--steps', type=int, nargs='+', default=[3000],
                         help='steps for this run; one value for every T, or one per T '
@@ -183,7 +191,10 @@ def main():
 
         if not args.skip_sim:
             cmd = [vortex_sim, '--nx', str(args.nx), '--ny', str(args.ny), '--nz', str(args.nz),
-                   '--T', str(T), '--steps', str(steps), '--print-interval', str(args.print_interval)]
+                   '--a0', str(args.a0), '--k', str(args.k), '--dt', str(args.dt),
+                   '--cutoff', str(args.cutoff), '--skin', str(args.skin), '--seed', str(args.seed),
+                   '--T', str(T), '--steps', str(steps),
+                   '--print-interval', str(args.print_interval)]
             if restart_file is not None:
                 cmd += ['--restart', os.path.abspath(restart_file), '--start-step', '0']
             run(cmd, cwd=run_dir)
