@@ -46,6 +46,79 @@ would compile at all.
 | `hysteresis_sweep.sbatch` | Up-then-down sweep over the same file, sequential on one GPU |
 | `example_output/`      | Plots + `summary.dat` from a real run of both sweeps  |
 
+## Launching with your own parameters (quick recipe)
+
+Every run, one-way sweep or hysteresis, is set up the same way: a
+temperatures file, a parameters file, an output folder. Nothing in the repo
+has to be edited, so several users (or several parameter sets) can run from
+the same checkout at once. Run all of this from the repo root.
+
+**1. Temperatures file**: one `T steps step_min stride` row per
+temperature, `#` comments allowed (see `temperatures.tsv` for the format):
+
+```sh
+cat > my_temps.tsv <<'TSV'
+# T      steps  step_min  stride
+0.010    5000   2000      5
+0.015    5000   2000      5
+0.020    3000   1200      8
+TSV
+```
+
+**2. Parameters file** (optional): `VAR=value` lines for whatever you want
+to change from the defaults (see the table under
+[Physical and run parameters](#physical-and-run-parameters)); anything left
+out keeps its default:
+
+```sh
+cat > my_params.sh <<'PARAMS'
+K=1.5
+DT=0.005
+NX=40
+NY=40
+PARAMS
+```
+
+**3. Launch.** Pick a fresh `OUT_DIR` per run, or results get overwritten.
+
+One-way sweep (one GPU per temperature, in parallel, plus a collect job):
+
+```sh
+PARAMS_FILE=$PWD/my_params.sh OUT_DIR=$PWD/runs/k1.5 \
+    slurm/submit_sweep.sh my_temps.tsv
+```
+
+Hysteresis (up then back down, sequential on one GPU):
+
+```sh
+sbatch --export=ALL,TEMPS_FILE=$PWD/my_temps.tsv,PARAMS_FILE=$PWD/my_params.sh,OUT_DIR=$PWD/runs/hyst_k1.5 \
+    slurm/hysteresis_sweep.sbatch
+```
+
+For one or two changes you can skip the parameters file and set the
+variables directly, e.g. `K=1.5 OUT_DIR=$PWD/runs/k1.5 slurm/submit_sweep.sh`
+or `sbatch --export=ALL,K=1.5,OUT_DIR=... slurm/hysteresis_sweep.sbatch`.
+A variable set this way wins over the same one in `PARAMS_FILE`.
+
+**4. Check and collect.**
+- `squeue -u $USER` shows the jobs; `scancel <jobid>` stops one.
+- The first lines of each log (`slurm/logs/sweep_*.out` or
+  `slurm/logs/hysteresis_*.out`) print `Sim parameters: ...` with the values
+  the job actually used. Check them right after launching.
+- Results: `$OUT_DIR/summary.dat`, `$OUT_DIR/summary_*.png` and one folder
+  per temperature (or per leg, for hysteresis).
+
+Notes:
+- Use absolute paths (`$PWD/...`) for `TEMPS_FILE`, `PARAMS_FILE` and
+  `OUT_DIR`.
+- Hysteresis has a 12 h limit and the array tasks 8 h. For longer runs,
+  add `--time=24:00:00` to the `sbatch` call, or set
+  `SBATCH_TIMELIMIT=24:00:00` in front of `slurm/submit_sweep.sh`.
+- `MAX_CONCURRENT=N` in front of `slurm/submit_sweep.sh` caps how many
+  temperatures run at once (default 8).
+
+The sections below explain each job in more detail.
+
 ## Running a sweep
 
 Run everything from the repo root (the batch scripts find the repo through
@@ -130,19 +203,9 @@ runs used:
 | `MSD_ORIGIN_SPACING` | `msd.py --origin-spacing` (snapshots)| 10        |
 
 `T`, `steps`, `step_min` and `stride` still come from the temperatures
-file; `TEMPS_FILE` and `OUT_DIR` pick the file and the output folder. Give
-each parameter set its own `OUT_DIR`, or the runs overwrite each other:
-
-```sh
-sbatch --export=ALL,K=1.5,DT=0.005,OUT_DIR=$PWD/runs/hyst_k1.5 slurm/hysteresis_sweep.sbatch
-K=1.5 OUT_DIR=$PWD/runs/k1.5 slurm/submit_sweep.sh
-```
-
-For many parameters, put `VAR=value` lines in a file and pass
-`PARAMS_FILE=/abs/path/to/file` instead; variables also set in the
-environment win over the file. Each job log starts with a
-`Sim parameters: ...` line showing what it actually used. The wall-time
-limit is an `sbatch` option: add `--time=24:00:00` to the `sbatch` call.
+file; `TEMPS_FILE` and `OUT_DIR` pick the file and the output folder. Set
+these variables in the environment or in a `PARAMS_FILE`, as shown in
+[the quick recipe](#launching-with-your-own-parameters-quick-recipe).
 
 ## Example output
 
