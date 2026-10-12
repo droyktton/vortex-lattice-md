@@ -260,6 +260,15 @@ a run without disorder at `dt = 0.005` (`np = 1`, `Ap = 0.3`):
   amplifies that rounding in the same way: typically ~1e-5, up to ~1e-2 for
   the odd vortex.
 
+#### Example: melting with disorder
+
+`slurm/example_output/disorder/` has temperature sweeps of the 30x30x4
+lattice with point disorder of increasing strength and with columnar
+disorder, compared with the clean lattice. Weak pins shift the melting
+transition down and broaden it; strong ones leave an amorphous pinned state
+at every T. See "Example output" in `slurm/README.md`. To overlay sweeps of
+your own, use `tools/compare_summaries.py`.
+
 #### Checking and benchmarking (`tools/`)
 
 Both scripts run on one GPU of the cluster; submit them from the repo root
@@ -644,7 +653,8 @@ python3 vizconfig.py config_step_999.dat --show
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `tsweep.py` — run the full pipeline across a temperature sweep
 - `tools/` — correctness checks and benchmark of the quenched disorder
-  (see [Quenched disorder](#quenched-disorder))
+  (see [Quenched disorder](#quenched-disorder)), and
+  `compare_summaries.py` to overlay the `summary.dat` of several sweeps
 - `slurm/` — SLURM scripts to run `tsweep.py` sweeps (one-way and hysteresis)
   on the GPU cluster; see `slurm/README.md`
 - `verlattice.gnu` — gnuplot alternative

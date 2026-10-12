@@ -44,7 +44,7 @@ would compile at all.
 | `collect.sbatch`       | Runs after the array; rebuilds the combined summary on `cpu` |
 | `submit_sweep.sh`      | Submits both of the above with the right dependency   |
 | `hysteresis_sweep.sbatch` | Up-then-down sweep over the same file, sequential on one GPU |
-| `example_output/`      | Plots + `summary.dat` from a real run of both sweeps  |
+| `example_output/`      | Plots + `summary.dat` from real runs of both sweeps, with and without disorder |
 
 ## Launching with your own parameters (quick recipe)
 
@@ -221,6 +221,7 @@ these variables in the environment or in a `PARAMS_FILE`, as shown in
 ## Example output
 
 `example_output/` holds the results of actually running the two jobs above
+(and the one-way sweep with quenched disorder)
 with the shipped `temperatures.tsv` (30x30x4 lattice, 16 temperatures), so
 you can see what to expect before spending GPU time. Everything under
 `runs/` is git-ignored; these are copies.
@@ -249,6 +250,42 @@ stays around 0.5 all the way down to T=0.002, giving a wide hysteresis loop.
 | | |
 |---|---|
 | ![defects, hysteresis](example_output/hysteresis/summary_defects_vs_T.png) | ![S(q) peak, hysteresis](example_output/hysteresis/summary_Sqmax_vs_T.png) |
+
+**Quenched disorder** (`submit_sweep.sh` with a `PARAMS_FILE`,
+`example_output/disorder/`): the one-way sweep above, rerun with pinning
+centers (`np = 1`, `rp = 0.2`, `--disorder-seed 1`, everything else
+unchanged). Each subfolder has the `summary.dat` and the `params.sh` it
+was run with; to reproduce one:
+
+```sh
+PARAMS_FILE=$PWD/slurm/example_output/disorder/point_Ap0.03/params.sh \
+    OUT_DIR=$PWD/runs/point_Ap0.03 slurm/submit_sweep.sh
+```
+
+Weak point disorder shifts the melting transition down and broadens it.
+`Ap = 0.01` is indistinguishable from the clean lattice. With `Ap = 0.03`
+disclinations appear from T~0.007 instead of T~0.009 (6.6% vs 0.1% at
+T = 0.008) and the S(q) peak falls earlier. `Ap = 0.1` already amorphizes
+the lattice at T = 0.002 (23% disclinations, Bragg peak ~9 instead of 25),
+and the transition is all but gone. Above T~0.02 the weak-disorder curves
+rejoin the clean one: in the liquid, temperature beats pinning.
+
+![melting vs pin strength](example_output/disorder/melting_vs_Ap.png)
+
+Strong disorder (`Ap = 0.1`, `0.3`) leaves a pinned, amorphous state at
+every T. Point and columnar disorder differ in the lines: point pins make
+them rough (`⟨u²⟩` up 9-40x at T = 0.002), while columnar pins
+(`CORRELATED_DISORDER=1`) destroy in-plane order but keep the lines as
+straight as in the clean lattice or straighter, as expected for a Bose
+glass.
+
+![strong point vs columnar disorder](example_output/disorder/strong_point_vs_columnar.png)
+
+Caveats: one disorder realization on a small (30x30x4) lattice, so
+differences of a few percent are within noise. With strong disorder `D` at
+low T is not equilibrium diffusion: those runs are short (1500 steps) and
+the MSD mostly measures the relaxation of the initial perfect lattice into
+the pins. The plots are made with `tools/compare_summaries.py`.
 
 ## Building by hand
 
