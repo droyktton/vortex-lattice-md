@@ -83,54 +83,182 @@ command line:
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
 every vortex, saved every `--print-interval` steps plus always the last one
-(`config_step_<steps-1>.dat`).
+(`config_step_<steps-1>.dat`). With quenched disorder it also writes
+`pins.dat`.
 
 ### Quenched disorder
 
+Optional random pinning: Gaussian wells `U(r) = -Ap exp(-r²/rp²)` that act
+on every vortex within `3 rp` of a pin (the force is cut there). It is off
+by default. Without the disorder flags the simulation is exactly the one
+without them: same trajectories, same `config_step_*.dat`, same
+`simulation.log`, and no `pins.dat`.
+
 ```sh
-./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2              # independent pins per layer
-./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --correlated-disorder   # columnar
+# uncorrelated point disorder: independent pins in every layer
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2
+# columnar disorder: the same pins in every layer
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --correlated-disorder
+# another realization of the same disorder
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --disorder-seed 2
 ```
 
 | Flag                    | Meaning                                              | Default |
 |-------------------------|------------------------------------------------------|---------|
 | `--np`                  | pinning centers per unit area, per layer             | 0       |
-| `--Ap`                  | pin strength, `U = -Ap exp(-r²/rp²)` (attractive for Ap > 0) | 0 |
+| `--Ap`                  | pin strength, `U = -Ap exp(-r²/rp²)` (attractive for `Ap > 0`, repulsive for `Ap < 0`) | 0 |
 | `--rp`                  | pin range (force cut at 3 rp)                        | 0.1     |
 | `--disorder-seed`       | seed of the disorder realization                     | 1       |
 | `--correlated-disorder` | same pins in every layer instead of independent ones | off     |
 
-Disorder is enabled only when both `--np > 0` and `--Ap != 0`; otherwise the
-simulation is exactly the one without these flags (same trajectories, same
-`simulation.log`). The pins are a Poisson point process: each layer is cut
-into an implicit grid of cells at least 3 rp wide, and the number and
-positions of the pins in each cell are drawn from Philox keyed on
-`(cell, layer, disorder seed)`. Nothing is stored, so the disorder costs no
-memory, a restart sees the same pins given the same `--disorder-seed`, and
-the realization is independent of `--seed` — keep `--disorder-seed` fixed
-across a temperature sweep and vary it to average over disorder. The number
-of pins per layer is therefore random (Poisson with mean `np·Lx·Ly`); the
-actual counts are logged in the `[Quenched Disorder]` section of
-`simulation.log`, and every pin is written to `pins.dat` (`x y z`, one block
-per layer).
+Disorder is enabled only when both `--np > 0` and `--Ap != 0`. If only one
+of them is set, `vortex_sim` warns and runs without disorder.
 
-**Timestep.** A well's force peaks at `≈ 0.86 Ap/rp`, so resolving it needs
-`dt ≲ 0.12 rp²/Ap` (drift of at most 0.1 rp per step) and
-`dt ≲ rp²/(2T)` (thermal step at most rp). Both scale as `rp²`: halving
-`rp` costs 4× the steps. `vortex_sim` warns and logs a suggested `dt` when
-these are violated, but never changes `dt` itself. For example, with
-`Ap = 0.3`:
+#### How the pins are generated
+
+The pins are a Poisson point process. Each layer is cut into an implicit
+grid of pinning cells at least `3 rp` wide. The number of pins in each cell
+(Poisson, mean `np · cell area`) and their positions are drawn from Philox
+keyed on `(cell, layer, disorder seed)`; with `--correlated-disorder` the
+layer is left out of the key, so every layer gets the same pins. As a
+result:
+
+- **No memory cost.** Nothing is stored; the force kernel regenerates the
+  pins of the 3×3 pinning cells around each vortex on the fly.
+- **Restarts see the same pins**, given the same disorder flags.
+- **The disorder is independent of `--seed`** (the thermal noise). Keep
+  `--disorder-seed` fixed across a temperature sweep and vary it to average
+  over disorder realizations.
+- **The number of pins per layer is random**: Poisson with mean
+  `np · Lx · Ly`, where `Lx = nx a0` and `Ly = ny a0 √3/2`.
+
+Two hard limits make `vortex_sim` stop with an error:
+
+- the box must be at least 3 pinning cells (`9 rp`) wide in x and y;
+- at most 16 pins per pinning cell on average, i.e. `np · (3 rp)² ≤ 16`.
+
+#### Output
+
+- **`pins.dat`**: every pin, as `x y z` columns, one blank-line-separated
+  block per layer (same layout as the config files). To overlay the pins of
+  layer 0 on a snapshot in gnuplot:
+  `plot 'config_step_999.dat' skip 3 i 0 u 1:2, 'pins.dat' skip 1 i 0 u 1:2 pt 7 ps 0.5`
+  (the `skip` drops the header lines).
+- **`[Quenched Disorder]` section of `simulation.log`**: `np`, `Ap`, `rp`,
+  the force cutoff, the disorder seed, correlated or not, the pinning grid,
+  the actual number of pins in every layer (with the Poisson mean), and the
+  suggested maximum `dt`.
+- **stdout**: one line saying which kind of disorder is on.
+
+#### Choosing the parameters
+
+**Density.** The vortex density is `2/(√3 a0²) ≈ 1.15/a0²`, so `np ≈ 1.15`
+gives about one pin per vortex. `np` around 1 is a natural starting point;
+use `np ≪ 1` for dilute pins and `np ≫ 1` for dense, collectively acting
+pins.
+
+**Range.** Keep `rp` between `0.1` and `0.3 a0`: short-ranged compared with
+the vortex spacing, which is the point-disorder regime, without paying for
+a tiny `dt` (see below). Go below `0.1` only if the physics needs it; each
+halving of `rp` costs 4× the steps.
+
+**Strength.** `Ap` sets the depth of the wells and has to be compared with
+the elastic energy scale and with `T`. Scan it: no default fits every
+regime. For reference, with `T = 0.01`, `np = 1`, `rp = 0.2` and `Ap = 0.3`,
+53% of the vortices sit within `rp` of a pin after 2000 steps, against 11%
+by chance without disorder. That is already strong pinning.
+
+**Timestep.** This is the one that matters most. A well's force peaks at
+`≈ 0.86 Ap/rp`, so resolving it needs
+`dt ≲ 0.12 rp²/Ap` (drift of at most `0.1 rp` per step) and
+`dt ≲ rp²/(2T)` (thermal step of at most `rp`). `vortex_sim` prints a
+warning with the suggested `dt` when it is violated, and logs it in every
+run with disorder, but never changes `dt` itself. Check stderr, or the
+`Suggested Max dt` line of `simulation.log`, before a long run. For
+example, with `Ap = 0.3` and `T = 0.01`:
 
 | `rp` | suggested `dt` ≲ |
 |------|------------------|
+| 0.4  | 0.062            |
 | 0.3  | 0.035            |
 | 0.2  | 0.016            |
 | 0.1  | 0.004            |
 | 0.05 | 0.001            |
 
-so don't go below `rp ≈ 0.1 a0` unless the physics needs it. The pinning
-force itself is cheap (a 3×3 sweep of pinning cells, mostly empty for small
-rp); the timestep is what sets the cost.
+Doubling `Ap` halves the allowed `dt`. The default `--dt 0.01` is too large
+for the default `--rp 0.1` with `Ap ≳ 0.12`.
+
+**Averaging.** To average over disorder, run the same parameters (the
+whole temperature sweep) with several `--disorder-seed` values and average
+the results. `--seed` only changes the thermal noise.
+
+#### Sweeps (`tsweep.py` and SLURM)
+
+`tsweep.py` takes the same flags (`--np`, `--Ap`, `--rp`,
+`--disorder-seed`, `--correlated-disorder`) and passes them to every
+temperature, so the whole sweep sees the same realization. On the cluster,
+set them in your `params.sh` (see `slurm/README.md`):
+
+```sh
+PIN_NP=1                 # pins per unit area, per layer
+PIN_AP=0.3               # pin strength
+PIN_RP=0.2               # pin range
+DISORDER_SEED=1          # realization
+CORRELATED_DISORDER=0    # 1 = columnar
+DT=0.005                 # check it against the suggested dt above
+```
+
+In both cases the disorder flags are only passed to `vortex_sim` when
+`np` or `Ap` is nonzero, so sweeps without disorder run the same command
+line as before. Hysteresis sweeps (`--hysteresis`, `slurm/hysteresis_sweep.sbatch`)
+restart each temperature from the previous one; the pins are regenerated
+identically, so the whole cycle sees one realization.
+
+#### Performance
+
+The pinning force adds a 3×3 sweep of pinning cells per vortex per step,
+and its cost grows with the mean number of pins per pinning cell,
+`np · (3 rp)²`. Measured on an RTX 3080 (cell-list build, `Ap = 0.3`,
+`T = 0.01`, 3000 steps), relative to the same run without disorder and
+with the same `dt`:
+
+| `rp` \ `np` | 0.25 | 1 | 4 |
+|---|---|---|---|
+| 0.05 | ×1.02 | ×1.03 | ×1.04 |
+| 0.1  | ×1.03 | ×1.03 | ×1.07 |
+| 0.2  | ×1.04 | ×1.06 | ×1.14 |
+| 0.4  | ×1.06 | ×1.12 | ×1.27 |
+
+That is for 128×128×16 (262k vortices, 1.56 ms/step without disorder);
+64×64×16 gives the same numbers within a few percent (up to ×1.31 for
+`np = 4, rp = 0.4`). Columnar and uncorrelated disorder cost the same, and
+the Verlet-list rebuild rate barely changes.
+
+What does cost is the smaller `dt`. Per unit of physical time, relative to
+a run without disorder at `dt = 0.005` (`np = 1`, `Ap = 0.3`):
+
+| `rp` | `dt` used | cost per unit time |
+|------|-----------|--------------------|
+| 0.4  | 0.005     | ×1.12              |
+| 0.2  | 0.005     | ×1.06              |
+| 0.1  | 0.0039    | ×1.33              |
+| 0.05 | 0.00097   | ×5.1               |
+
+#### Reproducibility
+
+- **Without disorder** the code is bit-identical to the version before
+  disorder was added, in both the cell-list and direct builds.
+- **With disorder**, a run is bit-reproducible given the same flags and
+  build. The cell-list and direct builds see exactly the same pins and give
+  the same forces up to float rounding, but their trajectories drift apart
+  after a few thousand steps: a vortex sitting near the saddle between two
+  pins falls one way or the other depending on the last bit. Most vortices
+  agree to ~1e-5; a few percent can end up `~0.05 a0` apart. The two builds
+  agree statistically, not trajectory by trajectory.
+- **Restarts** read positions from text snapshots with 6 decimals, so a
+  restarted run is not bit-identical to an uninterrupted one. Pinning
+  amplifies that rounding in the same way: typically ~1e-5, up to ~1e-2 for
+  the odd vortex.
 
 ### Restart / checkpoint
 
