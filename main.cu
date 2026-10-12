@@ -13,6 +13,8 @@
 #include <thrust/scatter.h>
 #include <thrust/sort.h>
 #include <thrust/binary_search.h>
+#include <thrust/reduce.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/tuple.h>
@@ -476,10 +478,57 @@ struct CalculateForcesCellList {
 
 // Overdamped Langevin (Brownian) step, with the updated position folded back
 // into the periodic box.
+// ============================================================================
+// External driving force (optional)
+//
+// A uniform force on every vortex, along a fixed direction e = (cos a, sin a):
+//     F(t) = [Fdc + Fac sin(2 pi f t)] e,     t = step * dt.
+// It enters only the Langevin update (it is not part of fx/fy, so snapshots
+// keep holding the interaction + pinning forces). Off unless Fdc or Fac is
+// nonzero; when off, the update is literally the undriven one.
+//
+// Velocities: the dynamics is overdamped with unit mobility, so a vortex's
+// mean velocity over the noise is its deterministic force. The velocity of
+// layer z is therefore <fx, fy>_z + F(t), with no noise to average away. In-
+// plane pair forces cancel within a layer, so <f>_z is the pinning force plus
+// the net spring pull from the neighboring layers; averaged over all layers
+// the springs cancel too, and the lattice velocity is F(t) + <f_pin>.
+// ============================================================================
+
+struct DriveParams {
+    bool enabled;
+    float Fdc, Fac, freq, angle_deg;
+    float ex, ey;       // unit vector along the drive
+};
+
+// Drive amplitude at physical time t (double: t can get large)
+inline double driveAmplitude(const DriveParams& d, double t) {
+    return d.Fdc + d.Fac * sin(2.0 * M_PI * d.freq * t);
+}
+
+// (fx, fy) promoted to double, for the per-layer force sums
+struct ToDoublePair {
+    __host__ __device__
+    thrust::tuple<double, double> operator()(const thrust::tuple<float, float>& t) const {
+        return thrust::make_tuple(double(thrust::get<0>(t)), double(thrust::get<1>(t)));
+    }
+};
+
+struct AddPair {
+    __host__ __device__
+    thrust::tuple<double, double> operator()(const thrust::tuple<double, double>& a,
+                                             const thrust::tuple<double, double>& b) const {
+        return thrust::make_tuple(thrust::get<0>(a) + thrust::get<0>(b),
+                                  thrust::get<1>(a) + thrust::get<1>(b));
+    }
+};
+
 struct LangevinStep {
     const int* which_vortex_is;
     float dt, s2Tdt, Lx, Ly;
     unsigned long long seed, step;
+    bool driven;        // false: the undriven update, bit for bit
+    float Fdx, Fdy;     // drive force this step
 
     __host__ __device__
     thrust::tuple<float, float> operator()(
@@ -511,8 +560,13 @@ struct LangevinStep {
 
         r123::float2 noise = r123::boxmuller(rng[0], rng[1]);
 
-        x += fx * dt + noise.x * s2Tdt;
-        y += fy * dt + noise.y * s2Tdt;
+        if (driven) {
+            x += (fx + Fdx) * dt + noise.x * s2Tdt;
+            y += (fy + Fdy) * dt + noise.y * s2Tdt;
+        } else {
+            x += fx * dt + noise.x * s2Tdt;
+            y += fy * dt + noise.y * s2Tdt;
+        }
 
         // Periodic boundary conditions in x and y (z is periodic by construction)
         x = fold(x, Lx);
@@ -625,7 +679,8 @@ void writeSimulationLog(
     float k_spring, float T, float dt, int steps, float cutoff,
     int Ncx, int Ncy, int Ncxy, int Nc, float cut_offx, float cut_offy,
     bool use_cell_list, float skin, float cutoff_skin, unsigned long long seed,
-    const PinningParams& pin, const DisorderLog& dis
+    const PinningParams& pin, const DisorderLog& dis,
+    const DriveParams& drive, int velocity_interval
 ) {
     std::ofstream log(filename);
     if (!log.is_open()) {
@@ -674,6 +729,15 @@ void writeSimulationLog(
         for (int n : dis.pins_per_layer) log << " " << n;
         log << "  (Poisson, mean " << expected << ")\n";
         log << "Suggested Max dt     : " << dis.dt_max << "\n\n";
+    }
+
+    if (drive.enabled) {
+        log << "[Driving Force]\n";
+        log << "Drive DC Force (Fdc) : " << drive.Fdc << "\n";
+        log << "Drive AC Force (Fac) : " << drive.Fac << "  (F(t) = [Fdc + Fac sin(2 pi f t)] e)\n";
+        log << "Drive Frequency (f)  : " << drive.freq << "\n";
+        log << "Drive Angle (deg)    : " << drive.angle_deg << "  (e = (cos, sin); 0 = along x)\n";
+        log << "Velocity Interval    : " << velocity_interval << "  (steps between velocity.dat rows)\n\n";
     }
 
     if (use_cell_list) {
@@ -761,7 +825,7 @@ bool findLogValue(const std::string& log_path, const std::string& label, double&
 void checkRestartConsistency(
     const std::string& log_path, int Nmax, float a0, float k_spring,
     float T, float dt, float cutoff, float skin, unsigned long long seed,
-    const PinningParams& pin, float np, float rp)
+    const PinningParams& pin, float np, float rp, const DriveParams& drive)
 {
     std::ifstream test(log_path);
     if (!test.is_open()) {
@@ -789,6 +853,11 @@ void checkRestartConsistency(
         {pin.enabled ? "Pin Range (rp)" : nullptr,      double(rp)},
         {pin.enabled ? "Disorder Seed" : nullptr,       double(pin.dseed)},
         {pin.enabled ? "Disorder Correlated" : nullptr, pin.correlated ? 1.0 : 0.0},
+        // Same for the drive: absent from undriven logs.
+        {"Drive DC Force (Fdc)", drive.enabled ? double(drive.Fdc) : 0.0},
+        {"Drive AC Force (Fac)", drive.enabled ? double(drive.Fac) : 0.0},
+        {drive.enabled ? "Drive Frequency (f)" : nullptr, double(drive.freq)},
+        {drive.enabled ? "Drive Angle (deg)" : nullptr,   double(drive.angle_deg)},
     };
 
     for (const auto& c : checks) {
@@ -886,6 +955,12 @@ struct SimParams {
     float rp = 0.1f;
     unsigned long long disorder_seed = 1ULL;
     bool correlated_disorder = false;
+    // External drive: off unless Fdc or Fac is nonzero.
+    float Fdc = 0.0f;
+    float Fac = 0.0f;
+    float freq = 0.0f;
+    float drive_angle = 0.0f;   // degrees
+    int velocity_interval = -1; // -1 = same as print_interval
 };
 
 void printUsage(const char* prog) {
@@ -915,6 +990,14 @@ void printUsage(const char* prog) {
         "  --disorder-seed N   seed of the disorder realization        (default 1)\n"
         "  --correlated-disorder  same pins in every layer (columnar) instead of\n"
         "                      independent pins per layer\n"
+        "\n"
+        "External drive (off by default; enabled when --Fdc or --Fac is nonzero):\n"
+        "  F(t) = [Fdc + Fac sin(2 pi freq t)] (cos angle, sin angle), on every vortex\n"
+        "  --Fdc F             DC force                               (default 0)\n"
+        "  --Fac F             AC force amplitude                     (default 0)\n"
+        "  --freq F            AC frequency, in 1/time units          (default 0)\n"
+        "  --drive-angle F     drive direction, degrees from x        (default 0)\n"
+        "  --velocity-interval N  steps between velocity.dat rows (default: --print-interval)\n"
         "  -h, --help          show this message\n";
 }
 
@@ -948,6 +1031,11 @@ int parseArgs(int argc, char** argv, SimParams& p) {
             else if (arg == "--rp") p.rp = std::stof(next());
             else if (arg == "--disorder-seed") p.disorder_seed = std::stoull(next());
             else if (arg == "--correlated-disorder") p.correlated_disorder = true;
+            else if (arg == "--Fdc") p.Fdc = std::stof(next());
+            else if (arg == "--Fac") p.Fac = std::stof(next());
+            else if (arg == "--freq") p.freq = std::stof(next());
+            else if (arg == "--drive-angle") p.drive_angle = std::stof(next());
+            else if (arg == "--velocity-interval") p.velocity_interval = std::stoi(next());
             else throw std::invalid_argument("unknown option " + arg);
         }
     } catch (const std::exception& e) {
@@ -1069,6 +1157,48 @@ int main(int argc, char** argv) {
                   << " pinning, pins written to pins.dat\n";
     }
 
+    // --- External drive (see the driving-force section above) ---
+    DriveParams drive{};          // all zero: disabled
+    drive.enabled = (p.Fdc != 0.0f || p.Fac != 0.0f);
+    int velocity_interval = p.velocity_interval > 0 ? p.velocity_interval : p.print_interval;
+    if (drive.enabled) {
+        if (p.Fac != 0.0f && p.freq <= 0.0f) {
+            std::cerr << "Error: --Fac needs a positive --freq.\n";
+            return EXIT_FAILURE;
+        }
+        drive.Fdc = p.Fdc;
+        drive.Fac = p.Fac;
+        drive.freq = p.freq;
+        drive.angle_deg = p.drive_angle;
+        double a = p.drive_angle * M_PI / 180.0;
+        drive.ex = float(cos(a));
+        drive.ey = float(sin(a));
+
+        // Warnings only, like the pinning dt check.
+        float fmax_drive = fabsf(p.Fdc) + fabsf(p.Fac);
+        float lmin = pin.enabled ? fminf(a0, p.rp) : a0;
+        if (fmax_drive * dt > 0.1f * lmin) {
+            std::cerr << "Warning: the drive moves vortices " << fmax_drive * dt << " per step, more than "
+                         "0.1 of the smallest length scale (" << lmin << "); suggested dt <= "
+                      << 0.1f * lmin / fmax_drive << ".\n";
+        }
+        if (fmax_drive * dt * p.print_interval > 0.25f * fminf(Lx, Ly)) {
+            std::cerr << "Warning: vortices drift " << fmax_drive * dt * p.print_interval
+                      << " between snapshots, over a quarter of the box; msd.py cannot unwrap "
+                         "trajectories that coarse. Reduce --print-interval.\n";
+        }
+        if (p.Fac != 0.0f) {
+            double period = 1.0 / p.freq;
+            if (period < 20.0 * dt)
+                std::cerr << "Warning: the AC period (" << period << ") is under 20 timesteps.\n";
+            if (period < 8.0 * velocity_interval * dt)
+                std::cerr << "Warning: velocity.dat samples the AC period (" << period
+                          << ") fewer than 8 times; reduce --velocity-interval.\n";
+        }
+        std::cout << "External drive: Fdc = " << p.Fdc << ", Fac = " << p.Fac << ", f = " << p.freq
+                  << ", angle = " << p.drive_angle << " deg; velocities written to velocity.dat\n";
+    }
+
     // --- Restart bookkeeping ---
     bool restarting = !p.restart_file.empty();
     int start_step = 0;
@@ -1095,7 +1225,7 @@ int main(int argc, char** argv) {
         std::cout << "Restarting from " << p.restart_file << " at step " << start_step << "\n";
         checkRestartConsistency(dirName(p.restart_file) + "/simulation.log",
                                 Nmax, a0, k_spring, T, dt, cutoff, skin, p.seed,
-                                pin, p.np, p.rp);
+                                pin, p.np, p.rp, drive);
     }
 
     writeSimulationLog(
@@ -1105,7 +1235,7 @@ int main(int argc, char** argv) {
         k_spring, T, dt, steps, cutoff,
         Ncx, Ncy, Ncxy, Nc, cut_offx, cut_offy,
         use_cell_list, skin, cutoff_skin, p.seed,
-        pin, dis
+        pin, dis, drive, velocity_interval
     );
 
     // --- Allocations ---
@@ -1170,6 +1300,28 @@ int main(int argc, char** argv) {
     }
 
     
+    // velocity.dat: one row every velocity_interval steps (and the last step).
+    // A restart in the same folder appends to it instead of starting over.
+    std::ofstream vel_out;
+    std::vector<double> vel_sum(2, 0.0);
+    long vel_samples = 0;
+    // reduce_by_key outputs; at most one segment per vortex (Nmax), one per
+    // layer in practice. Only allocated when driven.
+    thrust::device_vector<int> seg_keys(drive.enabled ? Nmax : 0);
+    thrust::device_vector<double> seg_fx(drive.enabled ? Nmax : 0), seg_fy(drive.enabled ? Nmax : 0);
+    if (drive.enabled) {
+        std::ifstream existing("velocity.dat");
+        bool append = restarting && existing.good();
+        existing.close();
+        vel_out.open("velocity.dat", append ? std::ios::app : std::ios::trunc);
+        if (!append) {
+            vel_out << "step\tt\tFx\tFy\tvx\tvy";
+            for (int z = 0; z < Nz; ++z) vel_out << "\tvx_z" << z << "\tvy_z" << z;
+            vel_out << "\n";
+        }
+        vel_out << std::setprecision(8);
+    }
+
     std::cout << "Starting simulation..." << std::endl;
 
     // Start timer
@@ -1237,6 +1389,52 @@ int main(int argc, char** argv) {
             }
         );
 #endif
+        // Drive force this step, evaluated at the start of the step (explicit Euler)
+        float Fdx = 0.0f, Fdy = 0.0f;
+        if (drive.enabled) {
+            double amp = driveAmplitude(drive, double(step) * dt);
+            Fdx = float(amp * drive.ex);
+            Fdy = float(amp * drive.ey);
+        }
+
+        // Velocity of every layer: <f>_z + F(t) (see the driving-force section)
+        if (drive.enabled && (step % velocity_interval == 0 || step == steps - 1)) {
+            // One pass: memory is always grouped by layer (layer-major at the
+            // start, and the cell list sorts by z*Ncxy + cell), so reduce_by_key
+            // on posz gives one segment per layer. Segments are still summed by
+            // key on the host, so the result is right whatever the order.
+            auto f_begin = thrust::make_transform_iterator(
+                thrust::make_zip_iterator(thrust::make_tuple(fx.begin(), fy.begin())), ToDoublePair());
+            auto seg_end = thrust::reduce_by_key(
+                posz.begin(), posz.end(), f_begin,
+                seg_keys.begin(),
+                thrust::make_zip_iterator(thrust::make_tuple(seg_fx.begin(), seg_fy.begin())),
+                thrust::equal_to<int>(), AddPair());
+            int nseg = int(seg_end.first - seg_keys.begin());
+            thrust::host_vector<int> h_keys(seg_keys.begin(), seg_keys.begin() + nseg);
+            thrust::host_vector<double> h_sfx(seg_fx.begin(), seg_fx.begin() + nseg);
+            thrust::host_vector<double> h_sfy(seg_fy.begin(), seg_fy.begin() + nseg);
+            std::vector<double> vx(Nz, 0.0), vy(Nz, 0.0);
+            for (int k = 0; k < nseg; ++k) {
+                vx[h_keys[k]] += h_sfx[k];
+                vy[h_keys[k]] += h_sfy[k];
+            }
+            double vx_all = 0.0, vy_all = 0.0;
+            for (int z = 0; z < Nz; ++z) {
+                vx[z] = vx[z] / Nxy + Fdx;
+                vy[z] = vy[z] / Nxy + Fdy;
+                vx_all += vx[z] / Nz;
+                vy_all += vy[z] / Nz;
+            }
+            vel_out << step << "\t" << double(step) * dt << "\t" << Fdx << "\t" << Fdy
+                    << "\t" << vx_all << "\t" << vy_all;
+            for (int z = 0; z < Nz; ++z) vel_out << "\t" << vx[z] << "\t" << vy[z];
+            vel_out << "\n";
+            vel_sum[0] += vx_all;
+            vel_sum[1] += vy_all;
+            ++vel_samples;
+        }
+
         // Advance positions via Langevin integration (folds back into the box)
         auto input_zip = thrust::make_zip_iterator(thrust::make_tuple(
             posx.begin(), posy.begin(), fx.begin(), fy.begin(), thrust::make_counting_iterator(0)
@@ -1252,7 +1450,10 @@ int main(int argc, char** argv) {
                 Lx,
                 Ly,
                 p.seed,
-                static_cast<unsigned long long>(step)
+                static_cast<unsigned long long>(step),
+                drive.enabled,
+                Fdx,
+                Fdy
             }
         );
 
@@ -1270,6 +1471,10 @@ int main(int argc, char** argv) {
     int slot0 = h_where[0];
     std::cout << "Simulation complete! Final position Vortex 0: x = "
               << h_posx[slot0] << ", y = " << h_posy[slot0] << std::endl;
+    if (drive.enabled && vel_samples > 0) {
+        std::cout << "Mean lattice velocity over this run (" << vel_samples << " samples): vx = "
+                  << vel_sum[0] / vel_samples << ", vy = " << vel_sum[1] / vel_samples << "\n";
+    }
 
     // Stop timer
     auto end_time = std::chrono::high_resolution_clock::now();

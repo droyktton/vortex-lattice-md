@@ -68,8 +68,21 @@ def load_mean_u2(path):
     return load_scalar(path, col=0)
 
 
-def plot_summary(Ts, values, ylabel, title, out_path, logy=False):
-    pairs = [(T, v) for T, v in zip(Ts, values) if v is not None]
+def load_velocity_mean(path):
+    """(V_par, V_perp) from a velocity_mean.dat written by velocity.py, or None."""
+    if not os.path.exists(path):
+        return None
+    data = np.loadtxt(path, skiprows=1, ndmin=2)
+    return float(data[0, 0]), float(data[0, 1])
+
+
+# Parameters a sweep can run over, besides the temperature: name -> vortex_sim flag
+SWEEPABLE = {'T': '--T', 'Fdc': '--Fdc', 'Fac': '--Fac', 'freq': '--freq'}
+
+
+def plot_summary(Ts, values, ylabel, title, out_path, logy=False, xlabel='T'):
+    # A log axis can't show D <= 0 (a solid's fit noise), so leave those out
+    pairs = [(T, v) for T, v in zip(Ts, values) if v is not None and (v > 0 or not logy)]
     if not pairs:
         print(f"Skipping {out_path}: no data.")
         return
@@ -78,7 +91,7 @@ def plot_summary(Ts, values, ylabel, title, out_path, logy=False):
     plt.plot(xs, ys, marker='o')
     if logy:
         plt.yscale('log')
-    plt.xlabel('T')
+    plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title)
     plt.grid(True, which='both' if logy else 'major')
@@ -90,11 +103,20 @@ def plot_summary(Ts, values, ylabel, title, out_path, logy=False):
 def main():
     parser = argparse.ArgumentParser(
         description='Run vortex_sim plus the full analysis pipeline (analyze.py, msd.py, '
-                     'disclinations.py, roughness.py) across a temperature sweep, and '
-                     'collect a scalar summary (D, defect fraction, S(q) peak, line '
-                     'roughness) vs T.')
-    parser.add_argument('temperatures', type=float, nargs='+',
-                        help='T values to sweep, e.g. 0.005 0.01 0.015 0.02 0.03')
+                     'disclinations.py, roughness.py, and velocity.py for driven runs) across '
+                     'a temperature sweep -- or, with --sweep-param, a sweep of the drive '
+                     'force or frequency at fixed T -- and collect a scalar summary (D, '
+                     'defect fraction, S(q) peak, line roughness, and the mean velocity when '
+                     'driven) vs the swept parameter.')
+    parser.add_argument('temperatures', type=float, nargs='+', metavar='values',
+                        help='values of the swept parameter (T unless --sweep-param says '
+                             'otherwise), e.g. 0.005 0.01 0.015 0.02 0.03')
+    parser.add_argument('--sweep-param', choices=list(SWEEPABLE), default='T',
+                        help='parameter the positional values set (default T). With Fdc, Fac '
+                             'or freq, the temperature is fixed by --T and the run folders are '
+                             'named after the parameter (e.g. runs/Fdc_0.5)')
+    parser.add_argument('--T', type=float, default=0.01,
+                        help='fixed temperature when --sweep-param is not T (default 0.01)')
     parser.add_argument('--out-dir', default='runs',
                         help='parent directory for per-T run folders (default: runs)')
     parser.add_argument('--vortex-sim', default='./vortex_sim', help='path to the vortex_sim binary')
@@ -119,6 +141,15 @@ def main():
                         help='seed of the disorder realization, kept fixed across every T (default 1)')
     parser.add_argument('--correlated-disorder', action='store_true',
                         help='same pins in every layer (columnar) instead of independent per layer')
+    parser.add_argument('--Fdc', type=float, default=0.0,
+                        help='DC drive force (default 0 = no drive)')
+    parser.add_argument('--Fac', type=float, default=0.0,
+                        help='AC drive amplitude, F(t) = [Fdc + Fac sin(2 pi freq t)] (default 0)')
+    parser.add_argument('--freq', type=float, default=0.0, help='AC drive frequency (default 0)')
+    parser.add_argument('--drive-angle', type=float, default=0.0,
+                        help='drive direction in degrees from x (default 0)')
+    parser.add_argument('--velocity-interval', type=int, default=None,
+                        help='steps between velocity.dat rows (default: --print-interval)')
     parser.add_argument('--steps', type=int, nargs='+', default=[3000],
                         help='steps for this run; one value for every T, or one per T '
                              '(default 3000). Equilibration time is very T-dependent -- '
@@ -139,8 +170,8 @@ def main():
     parser.add_argument('--msd-origin-spacing', type=int, default=10,
                         help='msd.py --origin-spacing, in snapshots (default 10)')
     parser.add_argument('--hysteresis', action='store_true',
-                        help='start each T (after the first) from the PREVIOUS T\'s final '
-                             'configuration -- via vortex_sim\'s --restart/--start-step 0 -- '
+                        help='start each T (or swept value, after the first) from the PREVIOUS '
+                             'one\'s final configuration -- via vortex_sim\'s --restart/--start-step 0 -- '
                              'instead of always starting from the pristine ordered lattice. '
                              'Give a --temperatures list that ramps up and back down (e.g. '
                              '0.01 0.02 0.03 0.04 0.03 0.02 0.01) to trace out a heating/'
@@ -176,14 +207,19 @@ def main():
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(args.out_dir, exist_ok=True)
 
+    name = args.sweep_param
     summary = []
     prev_run_dir = None
-    for i, (T, steps, step_min, stride) in enumerate(
+    for i, (value, steps, step_min, stride) in enumerate(
             zip(args.temperatures, steps_list, step_min_list, stride_list)):
+        # Everything vortex_sim gets that the sweep can change
+        point = {'T': args.T, 'Fdc': args.Fdc, 'Fac': args.Fac, 'freq': args.freq}
+        point[name] = value
+        T = point['T']
         if args.hysteresis:
-            run_dir = os.path.join(args.out_dir, f"{i:03d}_T_{T}")
+            run_dir = os.path.join(args.out_dir, f"{i:03d}_{name}_{value}")
         else:
-            run_dir = os.path.join(args.out_dir, f"T_{T}")
+            run_dir = os.path.join(args.out_dir, f"{name}_{value}")
         os.makedirs(run_dir, exist_ok=True)
 
         restart_file = None
@@ -191,12 +227,13 @@ def main():
             restart_file = find_latest_config(prev_run_dir)
             if restart_file is None:
                 print(f"Error: --hysteresis needs a config_step_*.dat in the previous run "
-                      f"folder '{prev_run_dir}' to restart T={T} from, but none was found "
+                      f"folder '{prev_run_dir}' to restart {name}={value} from, but none was found "
                       f"(did that run finish, and was it run without --skip-sim?).")
                 sys.exit(1)
 
         tag = f", restarting from {restart_file}" if restart_file else ""
-        print(f"\n=== T={T}  (steps={steps}, step_min={step_min}, stride={stride}){tag} ===")
+        fixed = f", T={T}" if name != 'T' else ""
+        print(f"\n=== {name}={value}{fixed}  (steps={steps}, step_min={step_min}, stride={stride}){tag} ===")
 
         if not args.skip_sim:
             cmd = [vortex_sim, '--nx', str(args.nx), '--ny', str(args.ny), '--nz', str(args.nz),
@@ -211,6 +248,12 @@ def main():
                         '--disorder-seed', str(args.disorder_seed)]
                 if args.correlated_disorder:
                     cmd += ['--correlated-disorder']
+            # Same for the drive
+            if point['Fdc'] != 0 or point['Fac'] != 0:
+                cmd += ['--Fdc', str(point['Fdc']), '--Fac', str(point['Fac']),
+                        '--freq', str(point['freq']), '--drive-angle', str(args.drive_angle)]
+                if args.velocity_interval is not None:
+                    cmd += ['--velocity-interval', str(args.velocity_interval)]
             if restart_file is not None:
                 cmd += ['--restart', os.path.abspath(restart_file), '--start-step', '0']
             run(cmd, cwd=run_dir)
@@ -234,34 +277,50 @@ def main():
                  '--step-min', str(step_min), '--stride', str(stride), '--out-prefix', 'equil'],
                 cwd=run_dir)
 
+            if os.path.exists(os.path.join(run_dir, 'velocity.dat')):
+                run(['python3', os.path.join(scripts_dir, 'velocity.py'),
+                     '--step-min', str(step_min)], cwd=run_dir)
+
         D = load_scalar(os.path.join(run_dir, 'msd_diffusion.dat'))
         defect_frac = load_defect_fraction(os.path.join(run_dir, 'equil_disclinations.dat'))
         sq_max = load_sq_max(os.path.join(run_dir, 'equil_sq.dat'))
         mean_u2 = load_mean_u2(os.path.join(run_dir, 'equil_roughness.dat'))
-        summary.append((T, D, defect_frac, sq_max, mean_u2))
-        print(f"--- T={T}: D={D}  defect_fraction={defect_frac}  S(q)_max={sq_max}  "
-              f"mean_u2={mean_u2}")
+        vel = load_velocity_mean(os.path.join(run_dir, 'velocity_mean.dat'))
+        summary.append((value, D, defect_frac, sq_max, mean_u2, vel))
+        vel_msg = f"  V_par={vel[0]}  V_perp={vel[1]}" if vel else ""
+        print(f"--- {name}={value}: D={D}  defect_fraction={defect_frac}  S(q)_max={sq_max}  "
+              f"mean_u2={mean_u2}{vel_msg}")
 
         prev_run_dir = run_dir
 
+    # First column is the swept parameter; V_par/V_perp only when some run was
+    # driven, so undriven temperature sweeps write the same summary.dat as before.
+    nan = lambda v: v if v is not None else np.nan
+    driven = any(r[5] is not None for r in summary)
+    rows = []
+    for x, D, f, s, u, vel in summary:
+        row = [x, nan(D), nan(f), nan(s), nan(u)]
+        if driven:
+            row += list(vel) if vel is not None else [np.nan, np.nan]
+        rows.append(row)
+    header = f'{name}  D  defect_fraction  Sq_max  mean_u2' + ('  V_par  V_perp' if driven else '')
     summary_path = os.path.join(args.out_dir, 'summary.dat')
-    np.savetxt(summary_path,
-               [[T, D if D is not None else np.nan,
-                 f if f is not None else np.nan,
-                 s if s is not None else np.nan,
-                 u if u is not None else np.nan] for T, D, f, s, u in summary],
-               header='T  D  defect_fraction  Sq_max  mean_u2', comments='')
+    np.savetxt(summary_path, rows, header=header, comments='')
     print(f"\nSaved {summary_path}")
 
-    Ts = [r[0] for r in summary]
-    plot_summary(Ts, [r[1] for r in summary], 'D', 'Diffusion constant vs T',
-                 os.path.join(args.out_dir, 'summary_D_vs_T.png'), logy=True)
-    plot_summary(Ts, [r[2] for r in summary], 'defect fraction', 'Disclination fraction vs T',
-                 os.path.join(args.out_dir, 'summary_defects_vs_T.png'))
-    plot_summary(Ts, [r[3] for r in summary], 'max S(q)', 'S(q) peak height vs T',
-                 os.path.join(args.out_dir, 'summary_Sqmax_vs_T.png'), logy=True)
-    plot_summary(Ts, [r[4] for r in summary], r'$\langle u^2 \rangle$', 'Vortex line roughness vs T',
-                 os.path.join(args.out_dir, 'summary_roughness_vs_T.png'), logy=True)
+    xs = [r[0] for r in summary]
+    out = lambda q: os.path.join(args.out_dir, f'summary_{q}_vs_{name}.png')
+    plot_summary(xs, [r[1] for r in summary], 'D', f'Diffusion constant vs {name}',
+                 out('D'), logy=True, xlabel=name)
+    plot_summary(xs, [r[2] for r in summary], 'defect fraction', f'Disclination fraction vs {name}',
+                 out('defects'), xlabel=name)
+    plot_summary(xs, [r[3] for r in summary], 'max S(q)', f'S(q) peak height vs {name}',
+                 out('Sqmax'), logy=True, xlabel=name)
+    plot_summary(xs, [r[4] for r in summary], r'$\langle u^2 \rangle$', f'Vortex line roughness vs {name}',
+                 out('roughness'), logy=True, xlabel=name)
+    if driven:
+        plot_summary(xs, [r[5][0] if r[5] else None for r in summary], 'V parallel to the drive',
+                     f'Mean velocity vs {name}', out('V'), xlabel=name)
 
 
 if __name__ == "__main__":

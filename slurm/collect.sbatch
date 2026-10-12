@@ -24,6 +24,8 @@ set -euo pipefail
 REPO_ROOT="$SLURM_SUBMIT_DIR"
 source "$REPO_ROOT/slurm/env.sh"
 cd "$REPO_ROOT"
+# Only for SWEEP_ARGS: a sweep over the drive names its run folders after it.
+source "$REPO_ROOT/slurm/params.sh"
 
 TEMPS_FILE="${TEMPS_FILE:-$REPO_ROOT/slurm/temperatures.tsv}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/runs}"
@@ -36,7 +38,7 @@ for line in "${LINES[@]}"; do
 done
 
 python3 "$REPO_ROOT/tsweep.py" "${T_LIST[@]}" \
-    --out-dir "$OUT_DIR" --skip-sim --skip-analysis \
+    --out-dir "$OUT_DIR" --skip-sim --skip-analysis "${SWEEP_ARGS[@]}" \
     --steps "${STEPS_LIST[@]}" --step-min "${STEPMIN_LIST[@]}" --stride "${STRIDE_LIST[@]}"
 
 echo "Combined summary written to $OUT_DIR/summary.dat"

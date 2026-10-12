@@ -25,7 +25,8 @@ if [ -n "${PARAMS_FILE:-}" ]; then
     fi
     _VORTEX_ENV_OVERRIDES="$(declare -p NX NY NZ A0 K DT CUTOFF SKIN SEED \
         PRINT_INTERVAL MSD_WINDOW MSD_ORIGIN_SPACING \
-        PIN_NP PIN_AP PIN_RP DISORDER_SEED CORRELATED_DISORDER 2>/dev/null || true)"
+        PIN_NP PIN_AP PIN_RP DISORDER_SEED CORRELATED_DISORDER \
+        FDC FAC FREQ DRIVE_ANGLE VELOCITY_INTERVAL SWEEP_PARAM SWEEP_T 2>/dev/null || true)"
     source "$PARAMS_FILE"
     eval "$_VORTEX_ENV_OVERRIDES"
     unset _VORTEX_ENV_OVERRIDES
@@ -57,5 +58,28 @@ if [ "${PIN_NP:-0}" != "0" ] || [ "${PIN_AP:-0}" != "0" ]; then
         SIM_ARGS+=(--correlated-disorder)               # same pins in every layer (columnar)
     fi
 fi
+
+# External drive: likewise only passed on when FDC or FAC is set and nonzero,
+# or when the sweep itself runs over the drive (SWEEP_PARAM below).
+if [ "${FDC:-0}" != "0" ] || [ "${FAC:-0}" != "0" ] || [ "${SWEEP_PARAM:-T}" != "T" ]; then
+    SIM_ARGS+=(
+        --Fdc "${FDC:-0}"                               # DC drive force
+        --Fac "${FAC:-0}"                               # AC drive amplitude
+        --freq "${FREQ:-0}"                             # AC frequency
+        --drive-angle "${DRIVE_ANGLE:-0}"               # drive direction, degrees from x
+    )
+    if [ -n "${VELOCITY_INTERVAL:-}" ]; then
+        SIM_ARGS+=(--velocity-interval "$VELOCITY_INTERVAL")  # steps between velocity.dat rows
+    fi
+fi
+
+# What the first column of the temperatures file sets: T (default), or Fdc,
+# Fac or freq at the fixed temperature SWEEP_T. collect.sbatch needs these
+# too (to find the run folders), so they also live in their own array.
+SWEEP_ARGS=()
+if [ -n "${SWEEP_PARAM:-}" ] && [ "$SWEEP_PARAM" != "T" ]; then
+    SWEEP_ARGS=(--sweep-param "$SWEEP_PARAM" --T "${SWEEP_T:-0.01}")
+fi
+SIM_ARGS+=("${SWEEP_ARGS[@]}")
 
 echo "Sim parameters: ${SIM_ARGS[*]}"

@@ -99,9 +99,19 @@ def compute_msd(ux, uy, origin_spacing, window, t0_min=0):
     return lags, msd, origins, msd_per_origin
 
 
-def fit_diffusion_constant(t, msd, t_min):
-    """Linear fit to MSD(t) for t >= t_min: MSD ~ 4*D*t for 2D diffusion
-    (each vortex diffuses within its own layer plane), so D = slope/4. Only
+def subtract_drift(ux, uy):
+    """Remove the center-of-mass displacement (relative to the first
+    snapshot) from unwrapped trajectories, so a driven lattice's uniform
+    motion doesn't swamp the MSD. Uses the CM of all vortices in all layers."""
+    return (ux - (ux.mean(axis=1, keepdims=True) - ux[0].mean()),
+            uy - (uy.mean(axis=1, keepdims=True) - uy[0].mean()))
+
+
+def fit_diffusion_constant(t, msd, t_min, ndim=2):
+    """Linear fit to MSD(t) for t >= t_min: MSD ~ 2*ndim*D*t, i.e. 4*D*t for
+    2D diffusion (each vortex diffuses within its own layer plane), so D =
+    slope/4; ndim=1 for a single component (parallel or transverse to a
+    drive). Only
     meaningful once MSD has left the short-time non-diffusive regime (the
     caged/vibrational rise visible in msd_windows.png) -- t_min should be
     chosen past that crossover, not from t=0. Returns None if fewer than 2
@@ -110,12 +120,18 @@ def fit_diffusion_constant(t, msd, t_min):
     if mask.sum() < 2:
         return None
     slope, intercept = np.polyfit(t[mask], msd[mask], 1)
-    return slope / 4.0, slope, intercept
+    return slope / (2.0 * ndim), slope, intercept
 
 
-def plot_msd(t, msd, out_path, time_label, fit=None, t_min=None):
+def plot_msd(t, msd, out_path, time_label, fit=None, t_min=None, components=None):
     plt.figure(figsize=(7, 5))
-    plt.plot(t, msd, marker='o', markersize=3, label='MSD' if fit is not None else None)
+    plt.plot(t, msd, marker='o', markersize=3,
+             label='MSD' if fit is not None or components is not None else None)
+    if components is not None:
+        msd_par, msd_perp = components
+        plt.plot(t, msd_par, marker='^', markersize=3, label='parallel to the drive')
+        plt.plot(t, msd_perp, marker='v', markersize=3, label='transverse to the drive')
+        plt.legend()
     if fit is not None:
         D, slope, intercept = fit
         fit_t = t[t >= t_min]
@@ -175,6 +191,10 @@ def main():
                              '4*D*t in 2D); default: half of the largest available t. Check '
                              'msd_windows.png first -- t must be past the short-time non-diffusive '
                              'rise, or D comes out meaningless. Pass --fit-tmin -1 to skip the fit.')
+    parser.add_argument('--keep-drift', action='store_true',
+                        help='for a driven run (simulation.log has a [Driving Force] section), '
+                             'do NOT subtract the center-of-mass displacement before computing '
+                             'the MSD (by default it is subtracted, or the drift dominates)')
     parser.add_argument('--out-prefix', default=None,
                         help='output file prefix (default: msd, next to the snapshots)')
     parser.add_argument('--show', action='store_true', help='also open an interactive window')
@@ -203,7 +223,27 @@ def main():
     xs, ys = load_trajectory(snaps)
     ux, uy = unwrap_trajectory(xs, ys, Lx, Ly)
 
+    # Driven run: subtract the center-of-mass drift, and split the MSD into
+    # the components parallel and transverse to the drive.
+    drive_angle = find_log_value(snaps[0][1], 'Drive Angle (deg)')
+    driven = drive_angle is not None
+    if driven:
+        if args.keep_drift:
+            print("Driven run: keeping the center-of-mass drift (--keep-drift).")
+        else:
+            ux, uy = subtract_drift(ux, uy)
+            print("Driven run: subtracted the center-of-mass drift.")
+        a = np.radians(drive_angle)
+        u_par = ux * np.cos(a) + uy * np.sin(a)
+        u_perp = -ux * np.sin(a) + uy * np.cos(a)
+
     lags, msd, origins, msd_per_origin = compute_msd(ux, uy, args.origin_spacing, args.window, args.t0_min)
+    components = None
+    if driven:
+        zeros = np.zeros_like(u_par)
+        msd_par = compute_msd(u_par, zeros, args.origin_spacing, args.window, args.t0_min)[1]
+        msd_perp = compute_msd(u_perp, zeros, args.origin_spacing, args.window, args.t0_min)[1]
+        components = (msd_par, msd_perp)
     print(f"{len(origins)} time origin(s), window {lags[-1]} snapshots")
 
     lag_steps = lags * spacing
@@ -216,8 +256,12 @@ def main():
         t0_physical = t0_steps
 
     out_prefix = args.out_prefix or os.path.join(os.path.dirname(snaps[0][1]) or '.', 'msd')
-    np.savetxt(out_prefix + '.dat', np.column_stack([t_axis, msd]),
-               header='t  MSD', comments='')
+    if driven:
+        np.savetxt(out_prefix + '.dat', np.column_stack([t_axis, msd, msd_par, msd_perp]),
+                   header='t  MSD  MSD_par  MSD_perp', comments='')
+    else:
+        np.savetxt(out_prefix + '.dat', np.column_stack([t_axis, msd]),
+                   header='t  MSD', comments='')
     print(f"Saved {out_prefix}.dat")
 
     fit = None
@@ -231,11 +275,18 @@ def main():
         else:
             D, slope, intercept = fit
             print(f"Diffusion constant: D={D:.6g} (fit to t >= {fit_tmin:.3g})")
-            np.savetxt(out_prefix + '_diffusion.dat', [[D, fit_tmin, slope, intercept]],
-                       header='D  fit_tmin  slope  intercept', comments='')
+            if driven:
+                D_par = fit_diffusion_constant(t_axis, msd_par, fit_tmin, ndim=1)[0]
+                D_perp = fit_diffusion_constant(t_axis, msd_perp, fit_tmin, ndim=1)[0]
+                print(f"  parallel to the drive: D_par={D_par:.6g}, transverse: D_perp={D_perp:.6g}")
+                np.savetxt(out_prefix + '_diffusion.dat', [[D, fit_tmin, slope, intercept, D_par, D_perp]],
+                           header='D  fit_tmin  slope  intercept  D_par  D_perp', comments='')
+            else:
+                np.savetxt(out_prefix + '_diffusion.dat', [[D, fit_tmin, slope, intercept]],
+                           header='D  fit_tmin  slope  intercept', comments='')
             print(f"Saved {out_prefix}_diffusion.dat")
 
-    plot_msd(t_axis, msd, out_prefix + '.png', time_label, fit, fit_tmin)
+    plot_msd(t_axis, msd, out_prefix + '.png', time_label, fit, fit_tmin, components)
     plot_msd_windows(t_axis, msd_per_origin, t0_physical, msd, out_prefix + '_windows.png', time_label)
 
     if args.show:

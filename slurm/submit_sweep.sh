@@ -39,7 +39,7 @@ ARRAY_JOB=$(sbatch --parsable \
     --array=0-${LAST}%${MAX_CONCURRENT} \
     --export=ALL,TEMPS_FILE="$TEMPS_ABS" \
     slurm/sweep_array.sbatch)
-echo "Submitted sweep array: job $ARRAY_JOB ($N temperatures, up to $MAX_CONCURRENT at once)"
+echo "Submitted sweep array: job $ARRAY_JOB ($N sweep points, up to $MAX_CONCURRENT at once)"
 
 COLLECT_JOB=$(sbatch --parsable \
     --dependency=afterok:${ARRAY_JOB} \
