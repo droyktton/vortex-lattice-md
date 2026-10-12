@@ -218,9 +218,9 @@ identically, so the whole cycle sees one realization.
 
 The pinning force adds a 3×3 sweep of pinning cells per vortex per step,
 and its cost grows with the mean number of pins per pinning cell,
-`np · (3 rp)²`. Measured on an RTX 3080 (cell-list build, `Ap = 0.3`,
-`T = 0.01`, 3000 steps), relative to the same run without disorder and
-with the same `dt`:
+`np · (3 rp)²`. Measured with `tools/disorder_bench.sbatch` on an RTX 3080
+(cell-list build, `Ap = 0.3`, `T = 0.01`, 3000 steps), relative to the
+same run without disorder and with the same `dt`:
 
 | `rp` \ `np` | 0.25 | 1 | 4 |
 |---|---|---|---|
@@ -259,6 +259,43 @@ a run without disorder at `dt = 0.005` (`np = 1`, `Ap = 0.3`):
   restarted run is not bit-identical to an uninterrupted one. Pinning
   amplifies that rounding in the same way: typically ~1e-5, up to ~1e-2 for
   the odd vortex.
+
+#### Checking and benchmarking (`tools/`)
+
+Both scripts run on one GPU of the cluster; submit them from the repo root
+after `slurm/build.sh`. Output goes to `runs/` (ignored by git) and the log
+to `slurm/logs/`.
+
+```sh
+sbatch tools/disorder_smoke.sbatch     # ~1 min: correctness checks, PASS/FAIL table
+sbatch tools/disorder_bench.sbatch     # ~6 min: the performance tables above
+```
+
+- **`tools/disorder_smoke.sbatch`** builds a reference `vortex_sim` from
+  the last commit without disorder (`REF_REV`, default `acf9aba`) and runs
+  a set of short simulations. `tools/disorder_check.py` then checks them:
+  - without disorder, the configs and `simulation.log` are bit-identical to
+    the reference, in both builds;
+  - with disorder, runs are reproducible and `pins.dat` matches the log;
+  - the pin counts are Poisson and the pins lie inside the box;
+  - columnar layers are identical and another `--disorder-seed` gives
+    another realization;
+  - vortices are attracted to the pins;
+  - the `dt` warning fires when it should;
+  - cell-list vs direct and restart vs uninterrupted runs agree
+    statistically.
+
+  It exits nonzero if any check fails. Rerun it after touching the force
+  kernels or the disorder code.
+- **`tools/disorder_bench.sbatch`** measures ms/step over a grid of `np`
+  and `rp`, each against a run without disorder at the same `dt`. The
+  grid can be changed with environment variables (`SIZES`, `NP_LIST`,
+  `RP_LIST`, `AP`, `T`, `DT_MAX`, `STEPS`, `REPS`, `COL_RP`; see the
+  script's header), e.g.
+  `sbatch --export=ALL,SIZES="256 16",AP=0.5 tools/disorder_bench.sbatch`.
+  `tools/disorder_bench_summary.py` prints the tables and writes
+  `results.tsv`. The numbers depend on the GPU, so compare runs on the
+  same GPU model; the job log shows which GPU it ran on.
 
 ### Restart / checkpoint
 
@@ -606,6 +643,8 @@ python3 vizconfig.py config_step_999.dat --show
 - `msd.py` — mean squared displacement vs time, and the diffusion constant D
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `tsweep.py` — run the full pipeline across a temperature sweep
+- `tools/` — correctness checks and benchmark of the quenched disorder
+  (see [Quenched disorder](#quenched-disorder))
 - `slurm/` — SLURM scripts to run `tsweep.py` sweeps (one-way and hysteresis)
   on the GPU cluster; see `slurm/README.md`
 - `verlattice.gnu` — gnuplot alternative
