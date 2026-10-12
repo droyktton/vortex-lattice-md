@@ -242,6 +242,15 @@ Structure factor below (T=0.005, hexagonal Bragg lattice) and above
 |---|---|
 | ![S(k) solid](example_output/snapshots/T_0.005_sk.png) | ![S(k) liquid](example_output/snapshots/T_0.03_sk.png) |
 
+And what the lattice looks like: the Delaunay triangulation of the last
+frame (`disclinations.py config_step_<last>.dat`), one panel per layer, from
+a rerun of those two temperatures with the same parameters. Gray points are
+6-fold, blue 5-fold, red 7-fold, orange any other coordination. Below the
+transition every vortex is 6-fold; above it ~40% are defects.
+
+![Delaunay, T=0.005](example_output/snapshots/T_0.005_disclinations.png)
+![Delaunay, T=0.03](example_output/snapshots/T_0.03_disclinations.png)
+
 **Hysteresis sweep** (`hysteresis_sweep.sbatch`, `example_output/hysteresis/`):
 the lower branch is heating, the upper branch is cooling. On cooling, the
 system does not recrystallize within the simulated time; the defect fraction
@@ -280,6 +289,12 @@ straight as in the clean lattice or straighter, as expected for a Bose
 glass.
 
 ![strong point vs columnar disorder](example_output/disorder/strong_point_vs_columnar.png)
+
+The last frame of the `Ap = 0.1` sweep at T = 0.005, where the clean lattice
+is a perfect crystal (compare with the T = 0.005 frame above): ~36% of the
+vortices are defects, spread through every layer.
+
+![Delaunay, Ap=0.1, T=0.005](example_output/disorder/point_Ap0.1_T_0.005_disclinations.png)
 
 Caveats: one disorder realization on a small (30x30x4) lattice, so
 differences of a few percent are within noise. With strong disorder `D` at
