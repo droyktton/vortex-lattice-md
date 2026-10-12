@@ -18,6 +18,9 @@ integrated with overdamped Langevin dynamics.
 - **Quenched disorder (optional, off by default)**: random Gaussian pinning
   wells, independent in every layer (uncorrelated point disorder) or
   identical in every layer (columnar). See [Quenched disorder](#quenched-disorder).
+- **External drive (optional, off by default)**: a uniform DC and/or AC
+  force on every vortex, for driven (moving) vortex lattices, with
+  noise-free lattice and per-layer velocities. See [External drive](#external-drive).
 
 ## Force evaluation
 
@@ -79,12 +82,13 @@ command line:
 | `--print-interval`  | steps between snapshot writes   | 100       |
 | `--restart`, `--start-step` | resume from a checkpoint (see below) | off |
 | `--np`, `--Ap`, `--rp`, `--disorder-seed`, `--correlated-disorder` | quenched disorder (see below) | off |
+| `--Fdc`, `--Fac`, `--freq`, `--drive-angle`, `--velocity-interval` | external drive (see below) | off |
 
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
 every vortex, saved every `--print-interval` steps plus always the last one
 (`config_step_<steps-1>.dat`). With quenched disorder it also writes
-`pins.dat`.
+`pins.dat`, and with an external drive `velocity.dat`.
 
 ### Quenched disorder
 
@@ -306,6 +310,185 @@ sbatch tools/disorder_bench.sbatch     # ~6 min: the performance tables above
   `results.tsv`. The numbers depend on the GPU, so compare runs on the
   same GPU model; the job log shows which GPU it ran on.
 
+### External drive
+
+A uniform force on every vortex, for driven (moving) vortex lattices: DC,
+AC, or both, along a fixed direction `e = (cos θ, sin θ)`:
+
+```
+F(t) = [Fdc + Fac sin(2π f t)] e,     t = step · dt
+```
+
+```sh
+# DC drive along x, with point disorder: depinning / moving lattice
+./vortex_sim --nx 30 --ny 30 --T 0.002 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --Fdc 0.8
+# AC drive along y
+./vortex_sim --nx 30 --ny 30 --T 0.01 --Fac 0.5 --freq 0.05 --drive-angle 90
+# DC + AC along the same direction (e.g. to look for Shapiro steps)
+./vortex_sim --nx 30 --ny 30 --T 0.002 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 \
+    --Fdc 0.8 --Fac 0.3 --freq 0.1 --velocity-interval 5
+```
+
+| Flag                  | Meaning                                         | Default |
+|-----------------------|-------------------------------------------------|---------|
+| `--Fdc`               | DC force                                        | 0       |
+| `--Fac`               | AC amplitude                                    | 0       |
+| `--freq`              | AC frequency (1/time units; required with `--Fac`) | 0    |
+| `--drive-angle`       | drive direction θ, degrees from x               | 0       |
+| `--velocity-interval` | steps between `velocity.dat` rows               | `--print-interval` |
+
+The drive is on when `--Fdc` or `--Fac` is nonzero. Without them the
+simulation is exactly the undriven one: same trajectories, same
+`simulation.log`, and no `velocity.dat`. The drive can be combined with
+quenched disorder. Restarts pick the AC phase up correctly, since `t` is
+counted from step 0.
+
+#### Velocity (`velocity.dat`)
+
+The dynamics is overdamped with unit mobility, so the mean velocity of a
+vortex (averaged over the noise) is the deterministic force on it. The
+velocity of layer `z` is therefore `<f>_z + F(t)`, where `<f>_z` is the mean
+interaction + pinning force on that layer. That is exact and noise-free,
+with no need to difference positions. In-plane pair forces cancel within a
+layer, so `<f>_z` is the mean pinning force plus the net spring pull from
+the neighboring layers; summed over all layers the springs cancel too, so
+the lattice velocity is `F(t) + <f_pin>`. Without pinning a lattice slides
+at exactly `v = F`.
+
+`velocity.dat` has one row every `--velocity-interval` steps (and the last
+step), with columns
+`step t Fx Fy vx vy vx_z0 vy_z0 vx_z1 vy_z1 ...`: the drive, the lattice
+velocity, and the velocity of every layer. A spread in the per-layer
+velocities means the layers slide past each other (decoupling). A restart
+in the same folder appends to the file. The `fx fy` columns of the
+`config_step_*.dat` snapshots still hold the interaction + pinning force
+only, without the drive.
+
+```sh
+python3 velocity.py                     # in a run folder
+python3 velocity.py --step-min 3000     # average only past the transient
+```
+
+`velocity.py` plots v(t) (lattice and layers, parallel and transverse to
+the drive) to `velocity.png` and writes `velocity_mean.dat`, which holds:
+
+- `V_par` and `V_perp`: the time-averaged velocity parallel and transverse
+  to the drive;
+- the mean drive force;
+- `layer_spread`: max − min of the per-layer `V_par`.
+
+The default `--step-min` is half of the run.
+
+#### Diffusion of a moving lattice
+
+For a driven run `msd.py` subtracts the center-of-mass displacement before
+computing the MSD, so the drift doesn't swamp it (`--keep-drift` turns that
+off). It also splits the MSD into the components parallel and transverse to
+the drive:
+
+- `msd.dat` gets `MSD_par MSD_perp` columns;
+- `msd_diffusion.dat` gets `D_par D_perp` columns, from `MSD_i ≈ 2 D_i t`.
+
+`D` is still from the total MSD `≈ 4 D t`. Undriven runs write exactly the
+same files as before. A clean lattice is Galilean invariant, so its
+drift-subtracted `D` is the same with and without the drive (checked in
+`tools/drive_smoke.sbatch`).
+
+`msd.py` unwraps trajectories assuming every vortex moves less than half the
+box between snapshots. `vortex_sim` warns when the drift per snapshot,
+`(|Fdc| + |Fac|) dt · print-interval`, exceeds a quarter of the box.
+
+#### Choosing the parameters
+
+- **Timestep.** The drive moves each vortex `(|Fdc| + |Fac|) dt` per step.
+  Keep that under 0.1 of the smallest length in the problem: `a0`, or
+  `rp` with disorder. `vortex_sim` warns otherwise. With pinning, this adds
+  to the `dt` limit of the wells (see "Quenched disorder").
+- **AC drive.** Resolve the period with at least ~20 timesteps, and sample
+  it with `--velocity-interval` at least ~8 times per period. `vortex_sim`
+  warns otherwise. Average velocities over a whole number of periods; long
+  windows make that error negligible.
+- **Depinning.** A single isolated pin holds a vortex up to
+  `Fmax ≈ 0.86 Ap/rp` (1.29 for `Ap = 0.3, rp = 0.2`). The lattice depins
+  collectively well below that for weak pinning. Scan `Fdc` (below) to find
+  it.
+
+#### Force sweeps (V–F curves)
+
+`tsweep.py --sweep-param Fdc` sweeps the DC force at a fixed temperature
+`--T` instead of sweeping T. `Fac` and `freq` can be swept the same way. Run
+folders are named after the parameter (`runs/Fdc_0.5`), and
+`summary.dat`'s first column is the swept parameter. When the runs are
+driven, `summary.dat` gets two more columns, `V_par V_perp`, and there is
+one more plot, `summary_V_vs_Fdc.png`: the V–F curve. Each run also goes
+through the usual analysis (defects, S(q), roughness, drift-subtracted D),
+so the dynamical phases of the moving lattice (pinned, plastic flow,
+moving smectic, moving glass) can be told apart from the same table.
+
+```sh
+# V-F curve at T = 0.002 with point disorder
+python3 tsweep.py 0.1 0.2 0.4 0.6 0.8 1.0 1.5 --sweep-param Fdc --T 0.002 \
+    --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --steps 6000
+# ramp up and back down, each force starting from the previous one's
+# configuration: hysteresis in F
+python3 tsweep.py 0.1 0.4 0.8 1.2 0.8 0.4 0.1 --sweep-param Fdc --T 0.002 --hysteresis \
+    --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --steps 6000
+```
+
+The other drive flags (`--Fdc`, `--Fac`, `--freq`, `--drive-angle`,
+`--velocity-interval`) fix what isn't swept. On the cluster, set
+`SWEEP_PARAM=Fdc` and `SWEEP_T=...` (plus `FDC`, `FAC`, `FREQ`,
+`DRIVE_ANGLE`) in your `params.sh`. The "temperatures" file's first
+column then holds the forces; see `slurm/README.md`.
+
+#### Performance
+
+The drive is cheap. The uniform drift makes the Verlet list rebuild more
+often, about every `skin / (2 F dt)` steps, and sampling the velocity costs
+one reduction over the vortices per `velocity.dat` row. Measured on an RTX
+3080 (128×128×16 = 262k vortices, `T = 0.01`, `dt = 0.005`, 3000 steps,
+no disorder; run-to-run noise about ±3%):
+
+| `Fdc` | ms/step, `--velocity-interval 15` | ms/step, `--velocity-interval 1` | rebuilds / 3000 steps |
+|-------|------|------|-----|
+| 0 (no drive) | 1.60 | — | 99 |
+| 0.1   | 1.57 | 1.68 | 102 |
+| 0.3   | 1.68 | 1.70 | 123 |
+| 1     | 1.66 | 1.73 | 191 |
+| 3     | 1.72 | 1.82 | 347 |
+
+So the drive costs at most ~10% at the default `--velocity-interval`, and
+writing a row every step adds ~5% on top.
+
+#### Example: dynamic reordering
+
+`slurm/example_output/drive/` has a V–F curve of the 30x30x4 lattice with
+point disorder (`Ap = 0.1`, `np = 1`, `rp = 0.2`, T = 0.002). The lattice
+goes from pinned and amorphous through plastic flow to a moving crystal
+that recrystallizes above `Fdc` ≈ 0.6: defects 42% → 0, Bragg peak
+3.6 → 25, `V` → `F`. See "Example output" in `slurm/README.md`.
+
+#### Checking (`tools/drive_smoke.sbatch`)
+
+```sh
+sbatch tools/drive_smoke.sbatch     # ~3 min, PASS/FAIL table
+```
+
+Runs short simulations and `tools/drive_check.py` on them. It checks that:
+
+- a clean lattice at T = 0 moves rigidly at `v = F`, for a DC drive at
+  30° in both builds and for an AC drive;
+- at T > 0 the mean velocity is `F` and the drift-subtracted `D` matches
+  the undriven one;
+- strong pinning holds the lattice under a weak drive and lets it slide
+  under a strong one;
+- a restart continues `velocity.dat`;
+- the warnings fire when they should;
+- `tsweep.py --sweep-param Fdc --hysteresis` runs end to end.
+
+Without a drive, `tools/disorder_smoke.sbatch` with `REF_REV=<commit before
+the drive>` checks bit-identity with the previous code.
+
 ### Restart / checkpoint
 
 ```sh
@@ -329,7 +512,7 @@ everything physically needed, and the RNG (Philox4x32, keyed on
 count `step` from the right place, not restoring any generator state.
 
 **You must pass the same `--nx`/`--ny`/`--nz`/`--a0`/`--k`/`--T`/`--dt`/
-`--cutoff`/`--skin`/`--seed` (and the disorder flags, if any) as the original run** — none of these are
+`--cutoff`/`--skin`/`--seed` (and the disorder and drive flags, if any) as the original run** — none of these are
 recoverable from the checkpoint file's physical state alone, and getting one
 wrong (especially `--seed`) silently continues under different physics or
 replays already-used noise rather than failing loudly. As a safety net, if a
@@ -545,6 +728,13 @@ Produces:
   D≈0 (down to the fit's own noise floor) means a solid; a clearly nonzero,
   stable D means a liquid.
 
+For a driven run (its `simulation.log` has a `[Driving Force]` section),
+`msd.py` first subtracts the center-of-mass displacement (`--keep-drift`
+to skip that), and adds the components parallel and transverse to the
+drive: `msd.dat` gets `MSD_par MSD_perp` columns, `msd_diffusion.dat` gets
+`D_par D_perp` (from `MSD_i ≈ 2 D_i t`), and `msd.png` shows all three. See
+[External drive](#external-drive).
+
 ## Compare across runs
 
 `msd.dat` and `<name>_sq.dat` are both plain two-column (x, y) text files, so
@@ -617,6 +807,11 @@ Other flags: `--nx`/`--ny`/`--nz`/`--print-interval` (shared by every T),
 `--np`/`--Ap`/`--rp`/`--disorder-seed`/`--correlated-disorder` (quenched
 disorder, same realization at every T; only passed to `vortex_sim` when
 `--np` or `--Ap` is nonzero),
+`--Fdc`/`--Fac`/`--freq`/`--drive-angle`/`--velocity-interval` (external
+drive; only passed when `--Fdc` or `--Fac` is nonzero; driven runs also go
+through `velocity.py`, and `summary.dat` gets `V_par V_perp` columns),
+`--sweep-param Fdc|Fac|freq` with `--T` (sweep the drive at fixed T instead;
+see [Force sweeps](#force-sweeps-vf-curves)),
 `--msd-window`/`--msd-origin-spacing`, and `--skip-sim` to rerun just the
 analysis steps against `config_step_*.dat` files a previous sweep already
 produced (e.g. while retuning `--stride` or fit parameters, without repaying
@@ -651,9 +846,12 @@ python3 vizconfig.py config_step_999.dat --show
 - `roughness.py` — flux-line roughness ⟨u²⟩ (also optionally time-averaged)
 - `msd.py` — mean squared displacement vs time, and the diffusion constant D
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
-- `tsweep.py` — run the full pipeline across a temperature sweep
+- `velocity.py` — velocity of a driven lattice vs time, and its average
+- `tsweep.py` — run the full pipeline across a temperature sweep (or a
+  sweep of the drive force or frequency)
 - `tools/` — correctness checks and benchmark of the quenched disorder
-  (see [Quenched disorder](#quenched-disorder)), and
+  (see [Quenched disorder](#quenched-disorder)) and of the external drive
+  (see [External drive](#external-drive)), and
   `compare_summaries.py` to overlay the `summary.dat` of several sweeps
 - `slurm/` — SLURM scripts to run `tsweep.py` sweeps (one-way and hysteresis)
   on the GPU cluster; see `slurm/README.md`

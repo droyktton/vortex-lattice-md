@@ -101,6 +101,36 @@ variables directly, e.g. `K=1.5 OUT_DIR=$PWD/runs/k1.5 slurm/submit_sweep.sh`
 or `sbatch --export=ALL,K=1.5,OUT_DIR=... slurm/hysteresis_sweep.sbatch`.
 A variable set this way wins over the same one in `PARAMS_FILE`.
 
+**Force sweeps.** To sweep the drive instead of the temperature (a V–F
+curve), put the forces in the first column of the file and say so in the
+parameters file. Everything else works the same way, one-way or
+hysteresis:
+
+```sh
+cat > my_forces.tsv <<'TSV'
+# Fdc    steps  step_min  stride
+0.1      10000  5000      10
+0.5      10000  5000      10
+1.0      10000  5000      10
+TSV
+cat > my_drive.sh <<'PARAMS'
+SWEEP_PARAM=Fdc
+SWEEP_T=0.002
+PIN_NP=1
+PIN_AP=0.1
+PIN_RP=0.2
+DT=0.005
+PRINT_INTERVAL=50
+PARAMS
+PARAMS_FILE=$PWD/my_drive.sh OUT_DIR=$PWD/runs/vf slurm/submit_sweep.sh my_forces.tsv
+```
+
+The run folders are `runs/vf/Fdc_<F>` and `summary.dat` holds
+`Fdc D defect_fraction Sq_max mean_u2 V_par V_perp`, plus
+`summary_V_vs_Fdc.png`. Keep the drift per snapshot,
+`F · DT · PRINT_INTERVAL`, well under half the box, or `msd.py` cannot
+unwrap the trajectories; `vortex_sim` warns when it gets close.
+
 **4. Check and collect.**
 - `squeue -u $USER` shows the jobs; `scancel <jobid>` stops one.
 - The first lines of each log (`slurm/logs/sweep_*.out` or
@@ -207,11 +237,22 @@ runs used:
 | `PIN_RP`             | pin range                            | 0.1       |
 | `DISORDER_SEED`      | disorder realization                 | 1         |
 | `CORRELATED_DISORDER`| `1` = same pins in every layer (columnar) | 0    |
+| `FDC`                | DC drive force                       | 0 (no drive) |
+| `FAC`                | AC drive amplitude                   | 0 (no drive) |
+| `FREQ`               | AC frequency                         | 0         |
+| `DRIVE_ANGLE`        | drive direction, degrees from x      | 0         |
+| `VELOCITY_INTERVAL`  | steps between `velocity.dat` rows    | `PRINT_INTERVAL` |
+| `SWEEP_PARAM`        | what the first column of the temperatures file sets: `T`, `Fdc`, `Fac` or `freq` | T |
+| `SWEEP_T`            | fixed temperature when `SWEEP_PARAM` is not `T` | 0.01 |
 
 The disorder flags are only passed on when `PIN_NP` or `PIN_AP` is set and
 nonzero, so sweeps without disorder run the same command as before. Mind
 the timestep for small `PIN_RP` (see "Quenched disorder" in the top-level
 README).
+
+The drive flags are likewise only passed on when `FDC` or `FAC` is
+nonzero, or when `SWEEP_PARAM` sweeps the drive. See "External drive" in
+the top-level README.
 
 `T`, `steps`, `step_min` and `stride` still come from the temperatures
 file; `TEMPS_FILE` and `OUT_DIR` pick the file and the output folder. Set
@@ -221,7 +262,7 @@ these variables in the environment or in a `PARAMS_FILE`, as shown in
 ## Example output
 
 `example_output/` holds the results of actually running the two jobs above
-(and the one-way sweep with quenched disorder)
+(and the one-way sweep with quenched disorder, and a force sweep)
 with the shipped `temperatures.tsv` (30x30x4 lattice, 16 temperatures), so
 you can see what to expect before spending GPU time. Everything under
 `runs/` is git-ignored; these are copies.
@@ -301,6 +342,50 @@ differences of a few percent are within noise. With strong disorder `D` at
 low T is not equilibrium diffusion: those runs are short (1500 steps) and
 the MSD mostly measures the relaxation of the initial perfect lattice into
 the pins. The plots are made with `tools/compare_summaries.py`.
+
+**Driven lattice: V–F curve** (`submit_sweep.sh` with `SWEEP_PARAM=Fdc`,
+`example_output/drive/`): a sweep of the DC force at T = 0.002 through the
+point disorder of the `Ap = 0.1` example above (`np = 1`, `rp = 0.2`,
+`dt = 0.005`, 10000 steps per force, averages over the second half). The
+folder has the `summary.dat`, the `params.sh` and the `forces.tsv` it was
+run with:
+
+```sh
+PARAMS_FILE=$PWD/slurm/example_output/drive/params.sh OUT_DIR=$PWD/runs/vf \
+    slurm/submit_sweep.sh slurm/example_output/drive/forces.tsv
+```
+
+It shows the dynamic reordering of a driven lattice:
+
+| `Fdc` | `V_par` | disclinations | S(q) peak | regime |
+|-------|---------|---------------|-----------|--------|
+| 0.02–0.05 | 0.001–0.008 | 42% | 3.6 | pinned, amorphous |
+| 0.1–0.5 | 0.06–0.47 | 43% → 4% | 3.6 → 17 | plastic flow |
+| ≥ 0.6 | ≈ `Fdc` (0.98 at 1.0) | 0% | 22 → 25 | moving crystal, `D` ≈ 0 |
+
+At low force the lattice stays pinned and as disordered as at rest. In an
+intermediate window it flows plastically: a fluctuating mix of moving and
+stuck regions, with the largest diffusion. Above `Fdc` ≈ 0.6
+the pinning averages out at high velocity and the lattice recrystallizes
+while it moves. The defects vanish, the Bragg peak comes back to its clean
+value of ~25, `D` drops to the noise floor, and `V` approaches `F`.
+
+![V-F curve and structure vs force](example_output/drive/vf_curve.png)
+
+The last frame of layer 0 in each regime:
+
+![Delaunay in the three regimes](example_output/drive/delaunay_regimes.png)
+
+and the velocity in the plastic regime (`Fdc = 0.3`, from `velocity.py`).
+The lattice and every layer move at ~0.26, below the drive. The velocity
+fluctuates as regions pin and unpin, and the layers move together.
+
+![velocity, Fdc=0.3](example_output/drive/velocity_Fdc_0.3.png)
+
+Caveats: one disorder realization of a 30x30x4 lattice, one force sweep up
+from the pristine lattice (no hysteresis), so the crossover forces are
+indicative. The small transverse velocity (~1e-3, 0.1% of `V`) is a
+finite-size effect of that single realization.
 
 ## Building by hand
 
