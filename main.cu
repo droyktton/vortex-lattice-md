@@ -212,6 +212,113 @@ void rebuildCellList(
 }
 
 // ============================================================================
+// Quenched point disorder (pinning centers)
+//
+// Each layer is divided into an implicit Npx x Npy grid of pinning cells, each
+// at least the pin interaction range (3 r_p) wide. The pins in cell (cx, cy)
+// of layer z are a pure function of (cx, cy, z, disorder_seed) through Philox:
+// counter word 3 = 0 draws the Poisson pin count, = k >= 1 the position of pin
+// k. Nothing is stored or rebuilt, and a restart sees the same pins given the
+// same --disorder-seed. Dropping z from the counter (correlated = true) gives
+// identical pins in every layer, i.e. columnar defects.
+//
+// Pin potential U = -Ap exp(-r^2/rp^2): attractive for Ap > 0.
+// ============================================================================
+
+struct PinningParams {
+    bool enabled;              // false = no pinning at all (bit-identical to no disorder)
+    bool correlated;
+    int Npx, Npy;
+    float lpx, lpy;            // pinning cell size
+    float Ap, rp2, rcut2;
+    float lambda;              // mean pins per pinning cell
+    unsigned long long dseed;
+};
+
+#define PIN_MAX_PER_CELL 64
+
+// Uniform in (0, 1) from a 32-bit Philox word.
+__host__ __device__ inline float u01_open(uint32_t r) {
+    return (float(r) + 0.5f) * 2.3283064365386963e-10f;
+}
+
+__host__ __device__ inline r123::Philox4x32::ctr_type pin_draw(
+    const PinningParams& pp, int cx, int cy, int z, int k)
+{
+    // Key differs from the thermal-noise key in LangevinStep.
+    r123::Philox4x32::key_type key = {{
+        static_cast<uint32_t>(pp.dseed & 0xFFFFFFFFull),
+        static_cast<uint32_t>(pp.dseed >> 32) ^ 0x85EBCA6Bu
+    }};
+    r123::Philox4x32::ctr_type ctr = {{
+        static_cast<uint32_t>(cx),
+        static_cast<uint32_t>(cy),
+        static_cast<uint32_t>(pp.correlated ? 0 : z),
+        static_cast<uint32_t>(k)
+    }};
+    r123::Philox4x32 gen;
+    return gen(ctr, key);
+}
+
+// Number of pins in a pinning cell: Poisson(lambda), by inversion.
+__host__ __device__ inline int pin_count(const PinningParams& pp, int cx, int cy, int z) {
+    float u = u01_open(pin_draw(pp, cx, cy, z, 0)[0]);
+    float p = expf(-pp.lambda);
+    float cdf = p;
+    int n = 0;
+    while (u > cdf && n < PIN_MAX_PER_CELL) {
+        ++n;
+        p *= pp.lambda / n;
+        cdf += p;
+    }
+    return n;
+}
+
+// Position of pin k (0-based) in a pinning cell.
+__host__ __device__ inline void pin_position(
+    const PinningParams& pp, int cx, int cy, int z, int k, float& px, float& py)
+{
+    r123::Philox4x32::ctr_type r = pin_draw(pp, cx, cy, z, k + 1);
+    px = (cx + u01_open(r[0])) * pp.lpx;
+    py = (cy + u01_open(r[1])) * pp.lpy;
+}
+
+__host__ __device__ inline void add_pinning_forces(
+    float x, float y, int z, float Lx, float Ly,
+    const PinningParams& pp, float& fx, float& fy)
+{
+    if (!pp.enabled) return;
+
+    int cx = int(fold(x, Lx) / pp.lpx);
+    int cy = int(fold(y, Ly) / pp.lpy);
+    if (cx >= pp.Npx) cx = pp.Npx - 1;
+    if (cy >= pp.Npy) cy = pp.Npy - 1;
+
+    float pref = -2.0f * pp.Ap / pp.rp2;
+
+    // Npx, Npy >= 3 is enforced in main(), so the 3x3 cells are distinct.
+    for (int dx = -1; dx <= 1; ++dx) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            int ncx = (cx + dx + pp.Npx) % pp.Npx;
+            int ncy = (cy + dy + pp.Npy) % pp.Npy;
+            int n = pin_count(pp, ncx, ncy, z);
+            for (int k = 0; k < n; ++k) {
+                float px, py;
+                pin_position(pp, ncx, ncy, z, k, px, py);
+                float rx = min_dist(x - px, Lx);
+                float ry = min_dist(y - py, Ly);
+                float r2 = rx * rx + ry * ry;
+                if (r2 < pp.rcut2) {
+                    float f = pref * expf(-r2 / pp.rp2);
+                    fx += f * rx;
+                    fy += f * ry;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Force evaluation
 // ============================================================================
 
@@ -245,6 +352,7 @@ struct CalculateForcesDirect {
     const int* where_vortex_is;
     int Nmax, Nxy, Nz;
     float Lx, Ly, k_spring, cutoff2;
+    PinningParams pin;
 
     __host__ __device__
     thrust::tuple<float, float> operator()(int idx) const {
@@ -277,6 +385,8 @@ struct CalculateForcesDirect {
         add_spring_forces(posx, posy, where_vortex_is,
                           idx, gid, Nxy, Nz, Lx, Ly, k_spring, fx, fy);
 
+        add_pinning_forces(x1, y1, z1, Lx, Ly, pin, fx, fy);
+
         return thrust::make_tuple(fx, fy);
     }
 };
@@ -292,6 +402,7 @@ struct CalculateForcesCellList {
     const int* where_vortex_is;
     int Nmax, Nxy, Nz, Ncx, Ncy, Ncxy;
     float Lx, Ly, k_spring, cutoff2, cut_offx, cut_offy;
+    PinningParams pin;
 
     __host__ __device__
     thrust::tuple<float, float> operator()(int idx) const {
@@ -352,6 +463,8 @@ struct CalculateForcesCellList {
 
         add_spring_forces(posx, posy, where_vortex_is,
                           idx, gid, Nxy, Nz, Lx, Ly, k_spring, fx, fy);
+
+        add_pinning_forces(x1, y1, z1, Lx, Ly, pin, fx, fy);
 
         return thrust::make_tuple(fx, fy);
     }
@@ -470,13 +583,49 @@ void printConfiguration(
     fout.close();
 }
 
+// Dump every pin as "x y z", one blank-line-separated block per layer (same
+// layout as the config files, for gnuplot). Returns the pin count per layer.
+// Uses the same pin_count/pin_position the force kernels evaluate.
+std::vector<int> writePins(const std::string& filename, const PinningParams& pin, int Nz) {
+    std::vector<int> counts(Nz, 0);
+    std::ofstream fout(filename);
+    if (!fout.is_open())
+        std::cerr << "Error: Could not open file " << filename << " for writing.\n";
+
+    fout << "x\ty\tz\n";
+    fout << std::fixed << std::setprecision(6);
+    for (int z = 0; z < Nz; ++z) {
+        for (int cy = 0; cy < pin.Npy; ++cy) {
+            for (int cx = 0; cx < pin.Npx; ++cx) {
+                int n = pin_count(pin, cx, cy, z);
+                for (int k = 0; k < n; ++k) {
+                    float px, py;
+                    pin_position(pin, cx, cy, z, k, px, py);
+                    fout << px << "\t" << py << "\t" << z << "\n";
+                }
+                counts[z] += n;
+            }
+        }
+        fout << "\n\n";
+    }
+    return counts;
+}
+
+// Parameters of the optional quenched disorder, for the log. Only written
+// when pinning is enabled, so logs of runs without disorder are unchanged.
+struct DisorderLog {
+    float np, rp, rcut, dt_max;
+    std::vector<int> pins_per_layer;
+};
+
 void writeSimulationLog(
     const std::string& filename,
     int Nx, int Ny, int Nz, int Nmax,
     float a0, float Lx, float Ly,
     float k_spring, float T, float dt, int steps, float cutoff,
     int Ncx, int Ncy, int Ncxy, int Nc, float cut_offx, float cut_offy,
-    bool use_cell_list, float skin, float cutoff_skin, unsigned long long seed
+    bool use_cell_list, float skin, float cutoff_skin, unsigned long long seed,
+    const PinningParams& pin, const DisorderLog& dis
 ) {
     std::ofstream log(filename);
     if (!log.is_open()) {
@@ -508,6 +657,24 @@ void writeSimulationLog(
     log << "Interaction Cutoff   : " << cutoff << "  (absolute, independent of a0)\n";
     log << "Core Radius          : " << R_CORE << "\n";
     log << "RNG Seed             : " << seed << "\n\n";
+
+    if (pin.enabled) {
+        double expected = double(pin.lambda) * pin.Npx * pin.Npy;
+        log << "[Quenched Disorder]\n";
+        log << "Pin Density (np)     : " << dis.np << "  (pins per unit area, per layer)\n";
+        log << "Pin Strength (Ap)    : " << pin.Ap << "  (U = -Ap exp(-r^2/rp^2))\n";
+        log << "Pin Range (rp)       : " << dis.rp << "\n";
+        log << "Pin Force Cutoff     : " << dis.rcut << "  (3 rp)\n";
+        log << "Disorder Seed        : " << pin.dseed << "\n";
+        log << "Disorder Correlated  : " << (pin.correlated ? 1 : 0)
+            << "  (0 = independent per layer, 1 = identical in every layer / columnar)\n";
+        log << "Pinning Grid         : " << pin.Npx << " x " << pin.Npy
+            << "  (cell " << pin.lpx << " x " << pin.lpy << ")\n";
+        log << "Pins per Layer       :";
+        for (int n : dis.pins_per_layer) log << " " << n;
+        log << "  (Poisson, mean " << expected << ")\n";
+        log << "Suggested Max dt     : " << dis.dt_max << "\n\n";
+    }
 
     if (use_cell_list) {
         log << "[Cell List Mesh Parameters]\n";
@@ -593,7 +760,8 @@ bool findLogValue(const std::string& log_path, const std::string& label, double&
 // disagrees with the current invocation.
 void checkRestartConsistency(
     const std::string& log_path, int Nmax, float a0, float k_spring,
-    float T, float dt, float cutoff, float skin, unsigned long long seed)
+    float T, float dt, float cutoff, float skin, unsigned long long seed,
+    const PinningParams& pin, float np, float rp)
 {
     std::ifstream test(log_path);
     if (!test.is_open()) {
@@ -613,9 +781,18 @@ void checkRestartConsistency(
         {"Interaction Cutoff",    double(cutoff)},
         {"Skin",                  double(skin)},
         {"RNG Seed",              double(seed)},
+        // Disorder labels are absent from logs of runs without disorder, and
+        // then skipped below like any other missing label.
+        {"Pin Density (np)",      pin.enabled ? double(np) : 0.0},
+        {"Pin Strength (Ap)",     pin.enabled ? double(pin.Ap) : 0.0},
+        // Only meaningful if this invocation has disorder too.
+        {pin.enabled ? "Pin Range (rp)" : nullptr,      double(rp)},
+        {pin.enabled ? "Disorder Seed" : nullptr,       double(pin.dseed)},
+        {pin.enabled ? "Disorder Correlated" : nullptr, pin.correlated ? 1.0 : 0.0},
     };
 
     for (const auto& c : checks) {
+        if (c.label == nullptr) continue;
         double logged;
         if (!findLogValue(log_path, c.label, logged)) continue;  // e.g. Skin absent in direct mode
         double denom = std::fabs(logged) > 1e-12 ? std::fabs(logged) : 1.0;
@@ -703,6 +880,12 @@ struct SimParams {
     int print_interval = 100;
     std::string restart_file;   // empty = fresh start
     int start_step = -1;        // -1 = auto-detect from the restart filename
+    // Quenched disorder: off unless both np > 0 and Ap != 0.
+    float np = 0.0f;
+    float Ap = 0.0f;
+    float rp = 0.1f;
+    unsigned long long disorder_seed = 1ULL;
+    bool correlated_disorder = false;
 };
 
 void printUsage(const char* prog) {
@@ -724,6 +907,14 @@ void printUsage(const char* prog) {
         "                      instead of a fresh lattice; pass the SAME --nx/--ny/--nz/\n"
         "                      --a0/--k/--T/--dt/--cutoff/--skin/--seed as the original run\n"
         "  --start-step N      step to resume at (default: parsed from --restart's filename)\n"
+        "\n"
+        "Quenched disorder (off by default; enabled when --np > 0 and --Ap != 0):\n"
+        "  --np F              pinning centers per unit area, per layer (default 0)\n"
+        "  --Ap F              pin strength, U = -Ap exp(-r^2/rp^2)    (default 0)\n"
+        "  --rp F              pin range                              (default 0.1)\n"
+        "  --disorder-seed N   seed of the disorder realization        (default 1)\n"
+        "  --correlated-disorder  same pins in every layer (columnar) instead of\n"
+        "                      independent pins per layer\n"
         "  -h, --help          show this message\n";
 }
 
@@ -752,6 +943,11 @@ int parseArgs(int argc, char** argv, SimParams& p) {
             else if (arg == "--print-interval") p.print_interval = std::stoi(next());
             else if (arg == "--restart") p.restart_file = next();
             else if (arg == "--start-step") p.start_step = std::stoi(next());
+            else if (arg == "--np") p.np = std::stof(next());
+            else if (arg == "--Ap") p.Ap = std::stof(next());
+            else if (arg == "--rp") p.rp = std::stof(next());
+            else if (arg == "--disorder-seed") p.disorder_seed = std::stoull(next());
+            else if (arg == "--correlated-disorder") p.correlated_disorder = true;
             else throw std::invalid_argument("unknown option " + arg);
         }
     } catch (const std::exception& e) {
@@ -816,6 +1012,63 @@ int main(int argc, char** argv) {
 
     bool use_cell_list = (USE_CELL_LIST == 1);
 
+    // --- Quenched disorder (see the pinning section above) ---
+    PinningParams pin{};          // all zero: disabled
+    DisorderLog dis{};
+    pin.enabled = (p.np > 0.0f && p.Ap != 0.0f);
+    if (!pin.enabled && (p.np > 0.0f || p.Ap != 0.0f)) {
+        std::cerr << "Warning: quenched disorder needs both --np > 0 and --Ap != 0; "
+                     "running without disorder.\n";
+    }
+    if (pin.enabled) {
+        if (p.rp <= 0.0f) {
+            std::cerr << "Error: --rp must be positive.\n";
+            return EXIT_FAILURE;
+        }
+        float rcut_p = 3.0f * p.rp;
+        pin.correlated = p.correlated_disorder;
+        pin.Npx = int(Lx / rcut_p);
+        pin.Npy = int(Ly / rcut_p);
+        if (pin.Npx < 3 || pin.Npy < 3) {
+            std::cerr << "Error: the box must be at least 3 pin ranges (9 rp) wide in x and y; "
+                         "reduce --rp or enlarge the system.\n";
+            return EXIT_FAILURE;
+        }
+        pin.lpx = Lx / pin.Npx;
+        pin.lpy = Ly / pin.Npy;
+        pin.Ap = p.Ap;
+        pin.rp2 = p.rp * p.rp;
+        pin.rcut2 = rcut_p * rcut_p;
+        pin.lambda = p.np * pin.lpx * pin.lpy;
+        pin.dseed = p.disorder_seed;
+        // The Poisson draw is capped at PIN_MAX_PER_CELL pins per cell.
+        if (pin.lambda > 16.0f) {
+            std::cerr << "Error: " << pin.lambda << " pins per pinning cell on average (np * (3 rp)^2"
+                         " or more); this is beyond the supported density. Reduce --np or --rp.\n";
+            return EXIT_FAILURE;
+        }
+
+        // A pin's force peaks at Fmax = sqrt(2/e) Ap/rp, at r = rp/sqrt(2). Resolving
+        // the well needs Fmax*dt <= 0.1 rp and sqrt(2 T dt) <= rp, both ~ rp^2.
+        // Only warn: dt is never changed behind the user's back.
+        float fmax = 0.8577639f * fabsf(p.Ap) / p.rp;
+        float dt_max = 0.1f * p.rp / fmax;
+        if (T > 0.0f) dt_max = fminf(dt_max, pin.rp2 / (2.0f * T));
+        if (dt > dt_max) {
+            std::cerr << "Warning: --dt " << dt << " is too large to resolve the pinning wells "
+                         "(rp = " << p.rp << ", Ap = " << p.Ap << ", T = " << T
+                      << "); suggested dt <= " << dt_max << ".\n";
+        }
+
+        dis.np = p.np;
+        dis.rp = p.rp;
+        dis.rcut = rcut_p;
+        dis.dt_max = dt_max;
+        dis.pins_per_layer = writePins("pins.dat", pin, Nz);
+        std::cout << "Quenched disorder: " << (pin.correlated ? "columnar" : "uncorrelated")
+                  << " pinning, pins written to pins.dat\n";
+    }
+
     // --- Restart bookkeeping ---
     bool restarting = !p.restart_file.empty();
     int start_step = 0;
@@ -841,7 +1094,8 @@ int main(int argc, char** argv) {
 
         std::cout << "Restarting from " << p.restart_file << " at step " << start_step << "\n";
         checkRestartConsistency(dirName(p.restart_file) + "/simulation.log",
-                                Nmax, a0, k_spring, T, dt, cutoff, skin, p.seed);
+                                Nmax, a0, k_spring, T, dt, cutoff, skin, p.seed,
+                                pin, p.np, p.rp);
     }
 
     writeSimulationLog(
@@ -850,7 +1104,8 @@ int main(int argc, char** argv) {
         a0, Lx, Ly,
         k_spring, T, dt, steps, cutoff,
         Ncx, Ncy, Ncxy, Nc, cut_offx, cut_offy,
-        use_cell_list, skin, cutoff_skin, p.seed
+        use_cell_list, skin, cutoff_skin, p.seed,
+        pin, dis
     );
 
     // --- Allocations ---
@@ -961,7 +1216,8 @@ int main(int argc, char** argv) {
                 thrust::raw_pointer_cast(which_vortex_is.data()),
                 thrust::raw_pointer_cast(where_vortex_is.data()),
                 Nmax, Nxy, Nz, Ncx, Ncy, Ncxy,
-                Lx, Ly, k_spring, cutoff * cutoff, cut_offx, cut_offy
+                Lx, Ly, k_spring, cutoff * cutoff, cut_offx, cut_offy,
+                pin
             }
         );
 #else
@@ -976,7 +1232,8 @@ int main(int argc, char** argv) {
                 thrust::raw_pointer_cast(posz.data()),
                 thrust::raw_pointer_cast(which_vortex_is.data()),
                 thrust::raw_pointer_cast(where_vortex_is.data()),
-                Nmax, Nxy, Nz, Lx, Ly, k_spring, cutoff * cutoff
+                Nmax, Nxy, Nz, Lx, Ly, k_spring, cutoff * cutoff,
+                pin
             }
         );
 #endif

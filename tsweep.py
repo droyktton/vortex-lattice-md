@@ -110,6 +110,15 @@ def main():
     parser.add_argument('--skin', type=float, default=0.5, help='Verlet skin width (default 0.5)')
     parser.add_argument('--seed', type=int, default=1234567, help='RNG seed (default 1234567)')
     parser.add_argument('--print-interval', type=int, default=15)
+    parser.add_argument('--np', type=float, default=0.0,
+                        help='pinning centers per unit area, per layer (default 0 = no disorder)')
+    parser.add_argument('--Ap', type=float, default=0.0,
+                        help='pin strength, U = -Ap exp(-r^2/rp^2) (default 0 = no disorder)')
+    parser.add_argument('--rp', type=float, default=0.1, help='pin range (default 0.1)')
+    parser.add_argument('--disorder-seed', type=int, default=1,
+                        help='seed of the disorder realization, kept fixed across every T (default 1)')
+    parser.add_argument('--correlated-disorder', action='store_true',
+                        help='same pins in every layer (columnar) instead of independent per layer')
     parser.add_argument('--steps', type=int, nargs='+', default=[3000],
                         help='steps for this run; one value for every T, or one per T '
                              '(default 3000). Equilibration time is very T-dependent -- '
@@ -195,6 +204,13 @@ def main():
                    '--cutoff', str(args.cutoff), '--skin', str(args.skin), '--seed', str(args.seed),
                    '--T', str(T), '--steps', str(steps),
                    '--print-interval', str(args.print_interval)]
+            # Disorder flags only when asked for, so runs without disorder keep
+            # the exact command line older vortex_sim builds accept.
+            if args.np != 0 or args.Ap != 0:
+                cmd += ['--np', str(args.np), '--Ap', str(args.Ap), '--rp', str(args.rp),
+                        '--disorder-seed', str(args.disorder_seed)]
+                if args.correlated_disorder:
+                    cmd += ['--correlated-disorder']
             if restart_file is not None:
                 cmd += ['--restart', os.path.abspath(restart_file), '--start-step', '0']
             run(cmd, cwd=run_dir)

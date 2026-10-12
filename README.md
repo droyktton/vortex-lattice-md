@@ -15,6 +15,9 @@ integrated with overdamped Langevin dynamics.
   draws independent noise from a counter-based Philox4x32 RNG keyed on
   `(global vortex id, step, seed)`, so trajectories are reproducible
   regardless of how particles get reordered in memory.
+- **Quenched disorder (optional, off by default)**: random Gaussian pinning
+  wells, independent in every layer (uncorrelated point disorder) or
+  identical in every layer (columnar). See [Quenched disorder](#quenched-disorder).
 
 ## Force evaluation
 
@@ -75,11 +78,59 @@ command line:
 | `--seed`            | RNG seed                        | 1234567   |
 | `--print-interval`  | steps between snapshot writes   | 100       |
 | `--restart`, `--start-step` | resume from a checkpoint (see below) | off |
+| `--np`, `--Ap`, `--rp`, `--disorder-seed`, `--correlated-disorder` | quenched disorder (see below) | off |
 
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
 every vortex, saved every `--print-interval` steps plus always the last one
 (`config_step_<steps-1>.dat`).
+
+### Quenched disorder
+
+```sh
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2              # independent pins per layer
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.3 --rp 0.2 --correlated-disorder   # columnar
+```
+
+| Flag                    | Meaning                                              | Default |
+|-------------------------|------------------------------------------------------|---------|
+| `--np`                  | pinning centers per unit area, per layer             | 0       |
+| `--Ap`                  | pin strength, `U = -Ap exp(-r²/rp²)` (attractive for Ap > 0) | 0 |
+| `--rp`                  | pin range (force cut at 3 rp)                        | 0.1     |
+| `--disorder-seed`       | seed of the disorder realization                     | 1       |
+| `--correlated-disorder` | same pins in every layer instead of independent ones | off     |
+
+Disorder is enabled only when both `--np > 0` and `--Ap != 0`; otherwise the
+simulation is exactly the one without these flags (same trajectories, same
+`simulation.log`). The pins are a Poisson point process: each layer is cut
+into an implicit grid of cells at least 3 rp wide, and the number and
+positions of the pins in each cell are drawn from Philox keyed on
+`(cell, layer, disorder seed)`. Nothing is stored, so the disorder costs no
+memory, a restart sees the same pins given the same `--disorder-seed`, and
+the realization is independent of `--seed` — keep `--disorder-seed` fixed
+across a temperature sweep and vary it to average over disorder. The number
+of pins per layer is therefore random (Poisson with mean `np·Lx·Ly`); the
+actual counts are logged in the `[Quenched Disorder]` section of
+`simulation.log`, and every pin is written to `pins.dat` (`x y z`, one block
+per layer).
+
+**Timestep.** A well's force peaks at `≈ 0.86 Ap/rp`, so resolving it needs
+`dt ≲ 0.12 rp²/Ap` (drift of at most 0.1 rp per step) and
+`dt ≲ rp²/(2T)` (thermal step at most rp). Both scale as `rp²`: halving
+`rp` costs 4× the steps. `vortex_sim` warns and logs a suggested `dt` when
+these are violated, but never changes `dt` itself. For example, with
+`Ap = 0.3`:
+
+| `rp` | suggested `dt` ≲ |
+|------|------------------|
+| 0.3  | 0.035            |
+| 0.2  | 0.016            |
+| 0.1  | 0.004            |
+| 0.05 | 0.001            |
+
+so don't go below `rp ≈ 0.1 a0` unless the physics needs it. The pinning
+force itself is cheap (a 3×3 sweep of pinning cells, mostly empty for small
+rp); the timestep is what sets the cost.
 
 ### Restart / checkpoint
 
@@ -104,7 +155,7 @@ everything physically needed, and the RNG (Philox4x32, keyed on
 count `step` from the right place, not restoring any generator state.
 
 **You must pass the same `--nx`/`--ny`/`--nz`/`--a0`/`--k`/`--T`/`--dt`/
-`--cutoff`/`--skin`/`--seed` as the original run** — none of these are
+`--cutoff`/`--skin`/`--seed` (and the disorder flags, if any) as the original run** — none of these are
 recoverable from the checkpoint file's physical state alone, and getting one
 wrong (especially `--seed`) silently continues under different physics or
 replays already-used noise rather than failing loudly. As a safety net, if a
@@ -389,6 +440,9 @@ given. `--stride` (also broadcastable per-T) controls the same
 analyze.py/disclinations.py subsampling cost tradeoff described above.
 
 Other flags: `--nx`/`--ny`/`--nz`/`--print-interval` (shared by every T),
+`--np`/`--Ap`/`--rp`/`--disorder-seed`/`--correlated-disorder` (quenched
+disorder, same realization at every T; only passed to `vortex_sim` when
+`--np` or `--Ap` is nonzero),
 `--msd-window`/`--msd-origin-spacing`, and `--skip-sim` to rerun just the
 analysis steps against `config_step_*.dat` files a previous sweep already
 produced (e.g. while retuning `--stride` or fit parameters, without repaying

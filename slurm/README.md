@@ -202,6 +202,16 @@ runs used:
 | `PRINT_INTERVAL`     | steps between snapshots              | 15        |
 | `MSD_WINDOW`         | `msd.py --window` (snapshots)        | 100       |
 | `MSD_ORIGIN_SPACING` | `msd.py --origin-spacing` (snapshots)| 10        |
+| `PIN_NP`             | pinning centers per unit area, per layer | 0 (no disorder) |
+| `PIN_AP`             | pin strength                         | 0 (no disorder) |
+| `PIN_RP`             | pin range                            | 0.1       |
+| `DISORDER_SEED`      | disorder realization                 | 1         |
+| `CORRELATED_DISORDER`| `1` = same pins in every layer (columnar) | 0    |
+
+The disorder flags are only passed on when `PIN_NP` or `PIN_AP` is set and
+nonzero, so sweeps without disorder run the same command as before. Mind
+the timestep for small `PIN_RP` (see "Quenched disorder" in the top-level
+README).
 
 `T`, `steps`, `step_min` and `stride` still come from the temperatures
 file; `TEMPS_FILE` and `OUT_DIR` pick the file and the output folder. Set

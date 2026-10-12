@@ -24,7 +24,8 @@ if [ -n "${PARAMS_FILE:-}" ]; then
         exit 1
     fi
     _VORTEX_ENV_OVERRIDES="$(declare -p NX NY NZ A0 K DT CUTOFF SKIN SEED \
-        PRINT_INTERVAL MSD_WINDOW MSD_ORIGIN_SPACING 2>/dev/null || true)"
+        PRINT_INTERVAL MSD_WINDOW MSD_ORIGIN_SPACING \
+        PIN_NP PIN_AP PIN_RP DISORDER_SEED CORRELATED_DISORDER 2>/dev/null || true)"
     source "$PARAMS_FILE"
     eval "$_VORTEX_ENV_OVERRIDES"
     unset _VORTEX_ENV_OVERRIDES
@@ -42,5 +43,19 @@ SIM_ARGS=(
     --msd-window "${MSD_WINDOW:-100}"                   # msd.py window, in snapshots
     --msd-origin-spacing "${MSD_ORIGIN_SPACING:-10}"    # msd.py origin spacing, in snapshots
 )
+
+# Quenched disorder: only passed on when requested (PIN_NP or PIN_AP set and
+# nonzero), so sweeps without disorder run exactly the same command as before.
+if [ "${PIN_NP:-0}" != "0" ] || [ "${PIN_AP:-0}" != "0" ]; then
+    SIM_ARGS+=(
+        --np "${PIN_NP:-0}"                             # pinning centers per unit area, per layer
+        --Ap "${PIN_AP:-0}"                             # pin strength
+        --rp "${PIN_RP:-0.1}"                           # pin range
+        --disorder-seed "${DISORDER_SEED:-1}"           # disorder realization
+    )
+    if [ "${CORRELATED_DISORDER:-0}" != "0" ]; then
+        SIM_ARGS+=(--correlated-disorder)               # same pins in every layer (columnar)
+    fi
+fi
 
 echo "Sim parameters: ${SIM_ARGS[*]}"
