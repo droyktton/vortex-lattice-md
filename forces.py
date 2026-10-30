@@ -14,11 +14,12 @@ from vizconfig import load_config, find_box_size, find_log_value, gather_configs
 R_CORE = 1.0e-3
 
 
-def pair_forces_layer(x, y, Lx, Ly, cutoff):
+def pair_forces_layer(x, y, Lx, Ly, cutoff, shifted=False):
     """In-plane vortex-vortex force on every vortex of one layer, as in the
     force kernels of main.cu: f_i = sum_j K1(r_ij)/r_ij (r_i - r_j) over the
-    j within `cutoff` (minimum image), with r clamped to R_CORE. Springs,
-    pinning and the drive are not included."""
+    j within `cutoff` (minimum image), with r clamped to R_CORE; with
+    `shifted`, K1(cutoff) is subtracted (--shifted-force). Springs, pinning
+    and the drive are not included."""
     pos = np.column_stack([np.mod(x, Lx), np.mod(y, Ly)])
     # boxsize can round a coordinate up to exactly L; cKDTree wants [0, L).
     pos[pos[:, 0] >= Lx, 0] = 0.0
@@ -32,7 +33,7 @@ def pair_forces_layer(x, y, Lx, Ly, cutoff):
     dx -= Lx * np.round(dx / Lx)
     dy -= Ly * np.round(dy / Ly)
     r = np.maximum(np.hypot(dx, dy), R_CORE)
-    f = k1(r) / r
+    f = (k1(r) - (k1(cutoff) if shifted else 0.0)) / r
 
     fx = np.zeros(len(x))
     fy = np.zeros(len(x))
@@ -95,6 +96,9 @@ def main():
                              '(default: the largest |component| found)')
     parser.add_argument('--cutoff', type=float, default=None,
                         help='interaction cutoff (default: Interaction Cutoff from simulation.log)')
+    parser.add_argument('--shifted-force', action='store_true',
+                        help='subtract K1(cutoff), as vortex_sim --shifted-force (default: '
+                             'from simulation.log)')
     parser.add_argument('--out-prefix', default=None,
                         help='output file prefix (default: derived from the matched file(s))')
     parser.add_argument('--show', action='store_true', help='also open an interactive window')
@@ -124,6 +128,7 @@ def main():
     if cutoff is None:
         print("Error: could not read Interaction Cutoff from simulation.log; pass --cutoff.")
         sys.exit(1)
+    shifted = args.shifted_force or bool(find_log_value(files[0], 'Shifted Force'))
     if cutoff >= 0.5 * min(Lx, Ly):
         print(f"Error: cutoff {cutoff} is not below half the box ({0.5 * min(Lx, Ly)}); "
               "the minimum image would miss pairs.")
@@ -139,7 +144,7 @@ def main():
             sys.exit(1)
         for z in sorted(df['z'].unique()):
             g = df[df['z'] == z]
-            fx, fy = pair_forces_layer(g['x'].to_numpy(), g['y'].to_numpy(), Lx, Ly, cutoff)
+            fx, fy = pair_forces_layer(g['x'].to_numpy(), g['y'].to_numpy(), Lx, Ly, cutoff, shifted)
             # Pair forces cancel within a layer (Newton's third law).
             worst_net = max(worst_net, abs(fx.sum()), abs(fy.sum()))
             FX.append(fx)
@@ -147,7 +152,8 @@ def main():
     fx = np.concatenate(FX)
     fy = np.concatenate(FY)
     fabs = np.hypot(fx, fy)
-    print(f"{len(fx)} vortex forces (cutoff {cutoff}); largest net force per layer: {worst_net:.2e}")
+    kind = 'shifted-force cutoff' if shifted else 'cutoff'
+    print(f"{len(fx)} vortex forces ({kind} {cutoff}); largest net force per layer: {worst_net:.2e}")
 
     fmax = args.fmax if args.fmax is not None else max(np.abs(fx).max(), np.abs(fy).max())
     if fmax <= 0:
@@ -170,7 +176,7 @@ def main():
     print(f"|f|: mean {fabs.mean():.4g}, rms {np.sqrt((fabs ** 2).mean()):.4g}")
 
     prefix = default_out_prefix(files, args.out_prefix)
-    header = (f"{label}; {len(fx)} vortex forces, cutoff {cutoff}\n"
+    header = (f"{label}; {len(fx)} vortex forces, {kind} {cutoff}\n"
               f"fx: mean {mx:.6g} std {sx:.6g} excess_kurtosis {kx:.6g}\n"
               f"fy: mean {my:.6g} std {sy:.6g} excess_kurtosis {ky:.6g}\n")
     np.savetxt(f"{prefix}_forces.dat", np.column_stack([centers, Px, Py]),

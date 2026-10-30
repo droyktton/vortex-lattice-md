@@ -403,6 +403,7 @@ struct CalculateForcesDirect {
     float Lx, Ly, k_spring, cutoff2;
     PinningParams pin;
     PlanarParams planar;
+    float f_shift;      // K1(cutoff) with --shifted-force, else 0 (bit-identical)
 
     __host__ __device__
     thrust::tuple<float, float> operator()(int idx) const {
@@ -426,7 +427,7 @@ struct CalculateForcesDirect {
             if (r2 < cutoff2) {
                 float r = sqrtf(r2);
                 if (r < R_CORE) r = R_CORE;
-                float f = k1_approx(r) / r;
+                float f = (k1_approx(r) - f_shift) / r;
                 fx += f * rx;
                 fy += f * ry;
             }
@@ -455,6 +456,7 @@ struct CalculateForcesCellList {
     float Lx, Ly, k_spring, cutoff2, cut_offx, cut_offy;
     PinningParams pin;
     PlanarParams planar;
+    float f_shift;      // K1(cutoff) with --shifted-force, else 0 (bit-identical)
 
     __host__ __device__
     thrust::tuple<float, float> operator()(int idx) const {
@@ -505,7 +507,7 @@ struct CalculateForcesCellList {
                     if (r2 < cutoff2) {
                         float r = sqrtf(r2);
                         if (r < R_CORE) r = R_CORE;
-                        float f = k1_approx(r) / r;
+                        float f = (k1_approx(r) - f_shift) / r;
                         fx += f * rx;
                         fy += f * ry;
                     }
@@ -750,7 +752,7 @@ void writeSimulationLog(
     bool use_cell_list, float skin, float cutoff_skin, unsigned long long seed,
     const PinningParams& pin, const DisorderLog& dis,
     const PlanarParams& planar, const PlanarLog& pll,
-    const DriveParams& drive, int velocity_interval
+    const DriveParams& drive, int velocity_interval, float f_shift
 ) {
     std::ofstream log(filename);
     if (!log.is_open()) {
@@ -780,6 +782,9 @@ void writeSimulationLog(
     log << "Total Steps          : " << steps << "\n";
     log << "Spring Constant (k)  : " << k_spring << "\n";
     log << "Interaction Cutoff   : " << cutoff << "  (absolute, independent of a0)\n";
+    // Only when on, so logs of plain-cutoff runs are unchanged.
+    if (f_shift != 0.0f)
+        log << "Shifted Force        : 1  (F(r) = K1(r) - K1(cutoff), K1(cutoff) = " << f_shift << ")\n";
     log << "Core Radius          : " << R_CORE << "\n";
     log << "RNG Seed             : " << seed << "\n\n";
 
@@ -907,7 +912,7 @@ void checkRestartConsistency(
     float T, float dt, float cutoff, float skin, unsigned long long seed,
     const PinningParams& pin, float np, float rp,
     const PlanarParams& planar, float rp_plane, unsigned long long disorder_seed,
-    const DriveParams& drive)
+    const DriveParams& drive, bool shifted_force)
 {
     std::ifstream test(log_path);
     if (!test.is_open()) {
@@ -925,6 +930,8 @@ void checkRestartConsistency(
         {"Temperature (T)",       double(T)},
         {"Time Step (dt)",        double(dt)},
         {"Interaction Cutoff",    double(cutoff)},
+        // Absent from plain-cutoff logs, then skipped like the disorder labels.
+        {"Shifted Force",         shifted_force ? 1.0 : 0.0},
         {"Skin",                  double(skin)},
         {"RNG Seed",              double(seed)},
         // Disorder labels are absent from logs of runs without disorder, and
@@ -1031,6 +1038,7 @@ struct SimParams {
     float dt = 0.01f;
     int steps = 500;
     float cutoff = 3.0f;
+    bool shifted_force = false; // subtract K1(cutoff): force continuous at the cutoff
     float skin = 0.5f;
     unsigned long long seed = 1234567ULL;
     int print_interval = 100;
@@ -1066,6 +1074,8 @@ void printUsage(const char* prog) {
         "  --dt F              timestep                        (default 0.01)\n"
         "  --steps N           number of integration steps     (default 500)\n"
         "  --cutoff F          interaction cutoff radius       (default 3.0)\n"
+        "  --shifted-force     shifted-force cutoff: F(r) = K1(r) - K1(cutoff), so the\n"
+        "                      force goes continuously to 0 at the cutoff (default: plain cut)\n"
         "  --skin F            Verlet skin width                (default 0.5)\n"
         "  --seed N            RNG seed                        (default 1234567)\n"
         "  --print-interval N  steps between snapshot writes   (default 100)\n"
@@ -1119,6 +1129,7 @@ int parseArgs(int argc, char** argv, SimParams& p) {
             else if (arg == "--dt") p.dt = std::stof(next());
             else if (arg == "--steps") p.steps = std::stoi(next());
             else if (arg == "--cutoff") p.cutoff = std::stof(next());
+            else if (arg == "--shifted-force") p.shifted_force = true;
             else if (arg == "--skin") p.skin = std::stof(next());
             else if (arg == "--seed") p.seed = std::stoull(next());
             else if (arg == "--print-interval") p.print_interval = std::stoi(next());
@@ -1168,6 +1179,10 @@ int main(int argc, char** argv) {
     // Deliberately NOT tied to a0: changing the lattice constant changes the
     // density, not the range of the interaction.
     float cutoff = p.cutoff;
+    // Shifted-force cutoff: subtracting K1(cutoff) removes the force jump at
+    // the cutoff. That jump makes neighbors crossing the cutoff kick the force
+    // by K1(cutoff) (0.04 at 3.0, which for a0 = 1 is exactly the 3 a0 shell).
+    float f_shift = p.shifted_force ? k1_approx(cutoff) : 0.0f;
 
     // Verlet skin: the cell-list mesh is built cutoff+skin wide so the list
     // stays a valid superset of the true neighbors for several steps. It is
@@ -1378,7 +1393,7 @@ int main(int argc, char** argv) {
         std::cout << "Restarting from " << p.restart_file << " at step " << start_step << "\n";
         checkRestartConsistency(dirName(p.restart_file) + "/simulation.log",
                                 Nmax, a0, k_spring, T, dt, cutoff, skin, p.seed,
-                                pin, p.np, p.rp, planar, p.rp_plane, p.disorder_seed, drive);
+                                pin, p.np, p.rp, planar, p.rp_plane, p.disorder_seed, drive, p.shifted_force);
     }
 
     writeSimulationLog(
@@ -1388,7 +1403,7 @@ int main(int argc, char** argv) {
         k_spring, T, dt, steps, cutoff,
         Ncx, Ncy, Ncxy, Nc, cut_offx, cut_offy,
         use_cell_list, skin, cutoff_skin, p.seed,
-        pin, dis, planar, pll, drive, velocity_interval
+        pin, dis, planar, pll, drive, velocity_interval, f_shift
     );
 
     // --- Allocations ---
@@ -1522,7 +1537,7 @@ int main(int argc, char** argv) {
                 thrust::raw_pointer_cast(where_vortex_is.data()),
                 Nmax, Nxy, Nz, Ncx, Ncy, Ncxy,
                 Lx, Ly, k_spring, cutoff * cutoff, cut_offx, cut_offy,
-                pin, planar
+                pin, planar, f_shift
             }
         );
 #else
@@ -1538,7 +1553,7 @@ int main(int argc, char** argv) {
                 thrust::raw_pointer_cast(which_vortex_is.data()),
                 thrust::raw_pointer_cast(where_vortex_is.data()),
                 Nmax, Nxy, Nz, Lx, Ly, k_spring, cutoff * cutoff,
-                pin, planar
+                pin, planar, f_shift
             }
         );
 #endif

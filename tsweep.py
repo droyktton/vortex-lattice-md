@@ -141,6 +141,12 @@ def main():
                         help='seed of the disorder realization, kept fixed across every T (default 1)')
     parser.add_argument('--correlated-disorder', action='store_true',
                         help='same pins in every layer (columnar) instead of independent per layer')
+    parser.add_argument('--shifted-force', action='store_true',
+                        help='shifted-force cutoff in vortex_sim (default: plain cut)')
+    parser.add_argument('--n-planes', type=int, default=0,
+                        help='planar disorder: number of planes x = x_i (default 0: none)')
+    parser.add_argument('--Ap-plane', type=float, default=0.0, help='plane strength (default 0)')
+    parser.add_argument('--rp-plane', type=float, default=0.1, help='plane range (default 0.1)')
     parser.add_argument('--Fdc', type=float, default=0.0,
                         help='DC drive force (default 0 = no drive)')
     parser.add_argument('--Fac', type=float, default=0.0,
@@ -248,6 +254,12 @@ def main():
                         '--disorder-seed', str(args.disorder_seed)]
                 if args.correlated_disorder:
                     cmd += ['--correlated-disorder']
+            # Same for the planes and the shifted-force cutoff
+            if args.n_planes != 0 or args.Ap_plane != 0:
+                cmd += ['--n-planes', str(args.n_planes), '--Ap-plane', str(args.Ap_plane),
+                        '--rp-plane', str(args.rp_plane), '--disorder-seed', str(args.disorder_seed)]
+            if args.shifted_force:
+                cmd += ['--shifted-force']
             # Same for the drive
             if point['Fdc'] != 0 or point['Fac'] != 0:
                 cmd += ['--Fdc', str(point['Fdc']), '--Fac', str(point['Fac']),

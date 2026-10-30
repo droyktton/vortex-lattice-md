@@ -34,6 +34,29 @@ Two interchangeable backends, selected at compile time via `USE_CELL_LIST`:
   assignment is guaranteed to stay a superset of the true neighbor list in
   between — typically cutting the rebuild frequency by an order of magnitude.
 
+### Cutoff: plain or shifted-force
+
+By default the pair force `K1(r)` is cut at `--cutoff`, so it jumps from
+`K1(cutoff)` to 0 there (0.040 at the default 3.0). With `a0 = 1` the
+default cutoff falls exactly on the third neighbor shell of the triangular
+lattice (`r = 3 a0`, 6 neighbors). In a solid, those neighbors then keep
+crossing the cutoff thermally, and each crossing kicks the force by
+`K1(cutoff)`. That noise does not vanish as T → 0: in a 30×30×4 crystal at
+T = 0.002 it is more than half the variance of the vortex-vortex force, and
+it makes the force distribution flatter than a Gaussian (see
+[forces.py](#analyze-interaction-force-distributions)).
+
+There are two ways around it:
+
+- a cutoff between shells (shells at `1, √3, 2, √7, 3, √12, √13, ...` × a0),
+  or a longer one where `K1` is small (`K1(4.5)` = 0.006);
+- `--shifted-force`: `F(r) = K1(r) − K1(cutoff)` for `r < cutoff`. The force
+  then goes continuously to 0 at the cutoff, whatever a0 is. The log gets a
+  `Shifted Force` line, and `forces.py` reads it.
+
+Without `--shifted-force` the force is the plain cut, bit-identical to
+earlier versions.
+
 ## Build
 
 Requires `nvcc` and the [Random123](https://github.com/DEShawResearch/random123)
@@ -77,6 +100,7 @@ command line:
 | `--dt`              | timestep                        | 0.01      |
 | `--steps`           | number of integration steps     | 500       |
 | `--cutoff`          | interaction cutoff radius       | 3.0       |
+| `--shifted-force`   | force goes continuously to 0 at the cutoff (see below) | off |
 | `--skin`            | Verlet skin width                | 0.5       |
 | `--seed`            | RNG seed                        | 1234567   |
 | `--print-interval`  | steps between snapshot writes   | 100       |
@@ -839,6 +863,7 @@ forces from the positions. The box size and cutoff come from
 | `--bins`                    | histogram bins                                   | 101     |
 | `--fmax`                    | histogram range `[-fmax, fmax]` (`[0, √2 fmax]` for `|f|`) | largest component |
 | `--cutoff`                  | interaction cutoff                               | from the log |
+| `--shifted-force`           | subtract `K1(cutoff)`, as `vortex_sim --shifted-force` | from the log |
 | `--out-prefix`, `--show`    | as in `analyze.py`                               |         |
 
 Output, with the prefix as in `analyze.py` (`config_step_999` or
@@ -855,8 +880,11 @@ Output, with the prefix as in `analyze.py` (`config_step_999` or
 
 Notes:
 
-- The cutoff is a hard cut, so a neighbor crossing `r = cutoff` changes
-  the force by `K1(cutoff)` (0.040 for the default 3.0). In a *perfect*
+- With the plain cutoff, a neighbor crossing `r = cutoff` changes the
+  force by `K1(cutoff)` (0.040 for the default 3.0). See
+  [Cutoff: plain or shifted-force](#cutoff-plain-or-shifted-force): for force
+  statistics in a solid, use `--shifted-force` or a cutoff between neighbor
+  shells. In a *perfect*
   lattice with `a0 = 1` there are neighbors at exactly `r = 3`, and the
   6-decimal rounding of the files puts some inside the cut and their
   mirror images outside. A perfect `configIni.dat` therefore shows

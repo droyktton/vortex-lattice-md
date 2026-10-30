@@ -26,7 +26,7 @@ if [ -n "${PARAMS_FILE:-}" ]; then
     _VORTEX_ENV_OVERRIDES="$(declare -p NX NY NZ A0 K DT CUTOFF SKIN SEED \
         PRINT_INTERVAL MSD_WINDOW MSD_ORIGIN_SPACING \
         PIN_NP PIN_AP PIN_RP DISORDER_SEED CORRELATED_DISORDER \
-        PLANE_N PLANE_AP PLANE_RP \
+        PLANE_N PLANE_AP PLANE_RP SHIFTED_FORCE \
         FDC FAC FREQ DRIVE_ANGLE VELOCITY_INTERVAL SWEEP_PARAM SWEEP_T 2>/dev/null || true)"
     source "$PARAMS_FILE"
     eval "$_VORTEX_ENV_OVERRIDES"
@@ -69,6 +69,11 @@ if [ "${PLANE_N:-0}" != "0" ] || [ "${PLANE_AP:-0}" != "0" ]; then
         --rp-plane "${PLANE_RP:-0.1}"                   # plane range
         --disorder-seed "${DISORDER_SEED:-1}"           # disorder realization
     )
+fi
+
+# Shifted-force cutoff (force continuous at the cutoff): only when asked for.
+if [ "${SHIFTED_FORCE:-0}" != "0" ]; then
+    SIM_ARGS+=(--shifted-force)
 fi
 
 # External drive: likewise only passed on when FDC or FAC is set and nonzero,

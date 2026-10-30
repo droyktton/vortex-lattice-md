@@ -240,6 +240,7 @@ runs used:
 | `PLANE_N`            | number of planes `x = x_i` (planar disorder) | 0 (no planes) |
 | `PLANE_AP`           | plane strength                       | 0 (no planes) |
 | `PLANE_RP`           | plane range                          | 0.1       |
+| `SHIFTED_FORCE`      | `1` = `--shifted-force` (force continuous at the cutoff) | 0 |
 | `FDC`                | DC drive force                       | 0 (no drive) |
 | `FAC`                | AC drive amplitude                   | 0 (no drive) |
 | `FREQ`               | AC frequency                         | 0         |
