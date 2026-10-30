@@ -41,4 +41,4 @@ clean:
 # Removes simulation output, not the binaries. Separate from `clean` since
 # these are results you may still want.
 clean-data:
-	rm -f configIni.dat config_step_*.dat simulation.log pins.dat
+	rm -f configIni.dat config_step_*.dat simulation.log pins.dat planes.dat

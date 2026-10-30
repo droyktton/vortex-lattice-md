@@ -82,13 +82,15 @@ command line:
 | `--print-interval`  | steps between snapshot writes   | 100       |
 | `--restart`, `--start-step` | resume from a checkpoint (see below) | off |
 | `--np`, `--Ap`, `--rp`, `--disorder-seed`, `--correlated-disorder` | quenched disorder (see below) | off |
+| `--n-planes`, `--Ap-plane`, `--rp-plane` | planar disorder (see below) | off |
 | `--Fdc`, `--Fac`, `--freq`, `--drive-angle`, `--velocity-interval` | external drive (see below) | off |
 
 Writes `simulation.log` (run parameters, mesh, Verlet-skin settings) and
 periodic snapshots `config_step_<N>.dat`: position, force, and identity of
 every vortex, saved every `--print-interval` steps plus always the last one
 (`config_step_<steps-1>.dat`). With quenched disorder it also writes
-`pins.dat`, and with an external drive `velocity.dat`.
+`pins.dat`, with planar disorder `planes.dat`, and with an external drive
+`velocity.dat`.
 
 ### Quenched disorder
 
@@ -309,6 +311,79 @@ sbatch tools/disorder_bench.sbatch     # ~6 min: the performance tables above
   `tools/disorder_bench_summary.py` prints the tables and writes
   `results.tsv`. The numbers depend on the GPU, so compare runs on the
   same GPU model; the job log shows which GPU it ran on.
+
+#### Planar disorder
+
+Optional planes `x = x_i`, parallel to y and z (like twin boundaries), each
+a Gaussian trough `U(x) = -Ap exp(-(x - x_i)²/rp²)` cut at `3 rp`. The
+force is along x only and the same in every layer. There are exactly
+`--n-planes` planes, with positions uniform and independent in `[0, Lx)`.
+They add to the point or columnar pins, so both kinds can be on at once.
+
+```sh
+# 5 planes, no point disorder
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --n-planes 5 --Ap-plane 0.3 --rp-plane 0.2
+# planes on top of weak point disorder
+./vortex_sim --nx 30 --ny 30 --T 0.01 --dt 0.005 --np 1 --Ap 0.03 --rp 0.2 \
+             --n-planes 5 --Ap-plane 0.3 --rp-plane 0.2
+```
+
+| Flag           | Meaning                                              | Default |
+|----------------|------------------------------------------------------|---------|
+| `--n-planes`   | number of planes                                     | 0       |
+| `--Ap-plane`   | plane strength, `U = -Ap exp(-d²/rp²)`               | 0       |
+| `--rp-plane`   | plane range (force cut at 3 rp)                      | 0.1     |
+
+The planes are on only when both `--n-planes > 0` and `--Ap-plane != 0`.
+Without them the simulation is the same as before (no `planes.dat`, no
+new log section). The positions come from Philox keyed on the plane index
+and `--disorder-seed`, with a different key from the pins'. Restarts see
+the same planes, and changing `--disorder-seed` changes both pins and
+planes. The positions are computed once and kept in a small device array,
+and the force loops over all planes, so the cost grows with `--n-planes`.
+A few tens of planes are cheap next to the pair forces. The box must be at
+least `9 rp` wide in x. The dt warning uses the same criterion as for the
+pins.
+
+Output: `planes.dat` (one sorted `x_i` per line, after an `x` header), a
+`[Planar Disorder]` section in `simulation.log`, and one line on stdout. To
+draw the planes over a snapshot in gnuplot, plot them as vertical lines:
+`plot 'config_step_999.dat' skip 3 i 0 u 1:2, 'planes.dat' skip 1 u 1:(0):(0):(100) w vectors nohead`.
+
+With a drive along y (`--drive-angle 90`) the vortices slide along the
+planes; along x they have to cross them.
+
+In SLURM sweeps the planes are set with `PLANE_N`, `PLANE_AP` and
+`PLANE_RP` (see `slurm/README.md`), e.g. in a `PARAMS_FILE`:
+
+```sh
+PLANE_N=5
+PLANE_AP=0.3
+PLANE_RP=0.2
+```
+
+**Checking** (`tools/planar_smoke.sbatch`, ~2 min, PASS/FAIL table):
+
+```sh
+sbatch tools/planar_smoke.sbatch
+```
+
+It builds a reference `vortex_sim` from the commit before the planes
+(`REF_REV`, default `e1fd008`), runs short simulations, and
+`tools/planar_check.py` checks that:
+
+- without planes, the output is bit-identical to the reference, in both
+  builds and with point pins;
+- with planes, runs are reproducible, `planes.dat` matches the log, the
+  planes are sorted and inside the box, and another `--disorder-seed`
+  gives other planes;
+- planes and point pins combine, with the planes unchanged;
+- the cell-list and direct builds agree statistically;
+- vortices gather near the planes (about 4x more within `rp/2` than
+  without planes);
+- the dt warning fires for a small `--rp-plane`;
+- a restart stays close to an uninterrupted run, without parameter
+  mismatch warnings.
 
 ### External drive
 

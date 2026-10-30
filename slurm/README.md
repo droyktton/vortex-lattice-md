@@ -237,6 +237,9 @@ runs used:
 | `PIN_RP`             | pin range                            | 0.1       |
 | `DISORDER_SEED`      | disorder realization                 | 1         |
 | `CORRELATED_DISORDER`| `1` = same pins in every layer (columnar) | 0    |
+| `PLANE_N`            | number of planes `x = x_i` (planar disorder) | 0 (no planes) |
+| `PLANE_AP`           | plane strength                       | 0 (no planes) |
+| `PLANE_RP`           | plane range                          | 0.1       |
 | `FDC`                | DC drive force                       | 0 (no drive) |
 | `FAC`                | AC drive amplitude                   | 0 (no drive) |
 | `FREQ`               | AC frequency                         | 0         |
@@ -249,6 +252,9 @@ The disorder flags are only passed on when `PIN_NP` or `PIN_AP` is set and
 nonzero, so sweeps without disorder run the same command as before. Mind
 the timestep for small `PIN_RP` (see "Quenched disorder" in the top-level
 README).
+The planar-disorder flags are likewise only passed on when `PLANE_N` or
+`PLANE_AP` is nonzero. They use the same `DISORDER_SEED` (see "Planar
+disorder" in the top-level README).
 
 The drive flags are likewise only passed on when `FDC` or `FAC` is
 nonzero, or when `SWEEP_PARAM` sweeps the drive. See "External drive" in

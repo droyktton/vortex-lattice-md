@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <vector>
+#include <algorithm>
 
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
@@ -321,6 +322,52 @@ __host__ __device__ inline void add_pinning_forces(
 }
 
 // ============================================================================
+// Quenched planar disorder (twin-boundary-like planes)
+//
+// N planes x = x_i, parallel to y and z, so the same in every layer. The x_i
+// are uniform and independent in [0, Lx): plane i is drawn by Philox from
+// counter (i, 0, 0, 0) and a key from --disorder-seed (a different one from
+// the pins'), so a restart sees the same planes. They are drawn once on the
+// host, sorted, and kept in a small device array.
+//
+// Plane potential U = -Ap exp(-d^2/rp^2), d the distance to the plane: the
+// force is along x only. Additive to the point/columnar pins above.
+// ============================================================================
+
+struct PlanarParams {
+    bool enabled;              // false = no planes at all (bit-identical to no planes)
+    int n;                     // number of planes
+    const float* xp;           // plane positions, device pointer (sorted)
+    float Ap, rp2, rcut2;
+};
+
+// Position of plane i, uniform in [0, Lx).
+inline float plane_position(unsigned long long dseed, int i, float Lx) {
+    r123::Philox4x32::key_type key = {{
+        static_cast<uint32_t>(dseed & 0xFFFFFFFFull),
+        static_cast<uint32_t>(dseed >> 32) ^ 0xC2B2AE35u
+    }};
+    r123::Philox4x32::ctr_type ctr = {{static_cast<uint32_t>(i), 0u, 0u, 0u}};
+    r123::Philox4x32 gen;
+    float x = u01_open(gen(ctr, key)[0]) * Lx;
+    return x < Lx ? x : 0.0f;   // float rounding can give exactly Lx
+}
+
+// Linear in the number of planes: meant for a few tens of them.
+__host__ __device__ inline void add_planar_forces(
+    float x, float Lx, const PlanarParams& pl, float& fx)
+{
+    if (!pl.enabled) return;
+
+    float pref = -2.0f * pl.Ap / pl.rp2;
+    for (int i = 0; i < pl.n; ++i) {
+        float dx = min_dist(x - pl.xp[i], Lx);
+        float d2 = dx * dx;
+        if (d2 < pl.rcut2) fx += pref * expf(-d2 / pl.rp2) * dx;
+    }
+}
+
+// ============================================================================
 // Force evaluation
 // ============================================================================
 
@@ -355,6 +402,7 @@ struct CalculateForcesDirect {
     int Nmax, Nxy, Nz;
     float Lx, Ly, k_spring, cutoff2;
     PinningParams pin;
+    PlanarParams planar;
 
     __host__ __device__
     thrust::tuple<float, float> operator()(int idx) const {
@@ -388,6 +436,7 @@ struct CalculateForcesDirect {
                           idx, gid, Nxy, Nz, Lx, Ly, k_spring, fx, fy);
 
         add_pinning_forces(x1, y1, z1, Lx, Ly, pin, fx, fy);
+        add_planar_forces(x1, Lx, planar, fx);
 
         return thrust::make_tuple(fx, fy);
     }
@@ -405,6 +454,7 @@ struct CalculateForcesCellList {
     int Nmax, Nxy, Nz, Ncx, Ncy, Ncxy;
     float Lx, Ly, k_spring, cutoff2, cut_offx, cut_offy;
     PinningParams pin;
+    PlanarParams planar;
 
     __host__ __device__
     thrust::tuple<float, float> operator()(int idx) const {
@@ -467,6 +517,7 @@ struct CalculateForcesCellList {
                           idx, gid, Nxy, Nz, Lx, Ly, k_spring, fx, fy);
 
         add_pinning_forces(x1, y1, z1, Lx, Ly, pin, fx, fy);
+        add_planar_forces(x1, Lx, planar, fx);
 
         return thrust::make_tuple(fx, fy);
     }
@@ -492,7 +543,8 @@ struct CalculateForcesCellList {
 // layer z is therefore <fx, fy>_z + F(t), with no noise to average away. In-
 // plane pair forces cancel within a layer, so <f>_z is the pinning force plus
 // the net spring pull from the neighboring layers; averaged over all layers
-// the springs cancel too, and the lattice velocity is F(t) + <f_pin>.
+// the springs cancel too, and the lattice velocity is F(t) + <f_pin>
+// (f_pin including the planes, if any).
 // ============================================================================
 
 struct DriveParams {
@@ -672,6 +724,23 @@ struct DisorderLog {
     std::vector<int> pins_per_layer;
 };
 
+// Parameters of the optional planar disorder, for the log.
+struct PlanarLog {
+    float rp, rcut, dt_max;
+    unsigned long long dseed;
+};
+
+// Dump the plane positions, one x per line (sorted).
+void writePlanes(const std::string& filename, const std::vector<float>& xp) {
+    std::ofstream fout(filename);
+    if (!fout.is_open())
+        std::cerr << "Error: Could not open file " << filename << " for writing.\n";
+
+    fout << "x\n";
+    fout << std::fixed << std::setprecision(6);
+    for (float x : xp) fout << x << "\n";
+}
+
 void writeSimulationLog(
     const std::string& filename,
     int Nx, int Ny, int Nz, int Nmax,
@@ -680,6 +749,7 @@ void writeSimulationLog(
     int Ncx, int Ncy, int Ncxy, int Nc, float cut_offx, float cut_offy,
     bool use_cell_list, float skin, float cutoff_skin, unsigned long long seed,
     const PinningParams& pin, const DisorderLog& dis,
+    const PlanarParams& planar, const PlanarLog& pll,
     const DriveParams& drive, int velocity_interval
 ) {
     std::ofstream log(filename);
@@ -729,6 +799,16 @@ void writeSimulationLog(
         for (int n : dis.pins_per_layer) log << " " << n;
         log << "  (Poisson, mean " << expected << ")\n";
         log << "Suggested Max dt     : " << dis.dt_max << "\n\n";
+    }
+
+    if (planar.enabled) {
+        log << "[Planar Disorder]\n";
+        log << "Planes (N)           : " << planar.n << "  (x = x_i, parallel to y and z, x_i uniform)\n";
+        log << "Plane Strength (Ap)  : " << planar.Ap << "  (U = -Ap exp(-d^2/rp^2))\n";
+        log << "Plane Range (rp)     : " << pll.rp << "\n";
+        log << "Plane Force Cutoff   : " << pll.rcut << "  (3 rp)\n";
+        log << "Plane Disorder Seed  : " << pll.dseed << "\n";
+        log << "Plane Suggested dt   : " << pll.dt_max << "\n\n";
     }
 
     if (drive.enabled) {
@@ -825,7 +905,9 @@ bool findLogValue(const std::string& log_path, const std::string& label, double&
 void checkRestartConsistency(
     const std::string& log_path, int Nmax, float a0, float k_spring,
     float T, float dt, float cutoff, float skin, unsigned long long seed,
-    const PinningParams& pin, float np, float rp, const DriveParams& drive)
+    const PinningParams& pin, float np, float rp,
+    const PlanarParams& planar, float rp_plane, unsigned long long disorder_seed,
+    const DriveParams& drive)
 {
     std::ifstream test(log_path);
     if (!test.is_open()) {
@@ -853,6 +935,11 @@ void checkRestartConsistency(
         {pin.enabled ? "Pin Range (rp)" : nullptr,      double(rp)},
         {pin.enabled ? "Disorder Seed" : nullptr,       double(pin.dseed)},
         {pin.enabled ? "Disorder Correlated" : nullptr, pin.correlated ? 1.0 : 0.0},
+        // Same for the planes.
+        {"Planes (N)",            planar.enabled ? double(planar.n) : 0.0},
+        {"Plane Strength (Ap)",   planar.enabled ? double(planar.Ap) : 0.0},
+        {planar.enabled ? "Plane Range (rp)" : nullptr,    double(rp_plane)},
+        {planar.enabled ? "Plane Disorder Seed" : nullptr, double(disorder_seed)},
         // Same for the drive: absent from undriven logs.
         {"Drive DC Force (Fdc)", drive.enabled ? double(drive.Fdc) : 0.0},
         {"Drive AC Force (Fac)", drive.enabled ? double(drive.Fac) : 0.0},
@@ -955,6 +1042,10 @@ struct SimParams {
     float rp = 0.1f;
     unsigned long long disorder_seed = 1ULL;
     bool correlated_disorder = false;
+    // Planar disorder: off unless both n_planes > 0 and Ap_plane != 0.
+    int n_planes = 0;
+    float Ap_plane = 0.0f;
+    float rp_plane = 0.1f;
     // External drive: off unless Fdc or Fac is nonzero.
     float Fdc = 0.0f;
     float Fac = 0.0f;
@@ -990,6 +1081,13 @@ void printUsage(const char* prog) {
         "  --disorder-seed N   seed of the disorder realization        (default 1)\n"
         "  --correlated-disorder  same pins in every layer (columnar) instead of\n"
         "                      independent pins per layer\n"
+        "\n"
+        "Planar disorder (off by default; enabled when --n-planes > 0 and --Ap-plane != 0;\n"
+        "additive to the pins above, uses the same --disorder-seed):\n"
+        "  planes x = x_i parallel to y and z, x_i uniform in [0, Lx)\n"
+        "  --n-planes N        number of planes                       (default 0)\n"
+        "  --Ap-plane F        plane strength, U = -Ap exp(-d^2/rp^2)  (default 0)\n"
+        "  --rp-plane F        plane range                            (default 0.1)\n"
         "\n"
         "External drive (off by default; enabled when --Fdc or --Fac is nonzero):\n"
         "  F(t) = [Fdc + Fac sin(2 pi freq t)] (cos angle, sin angle), on every vortex\n"
@@ -1031,6 +1129,9 @@ int parseArgs(int argc, char** argv, SimParams& p) {
             else if (arg == "--rp") p.rp = std::stof(next());
             else if (arg == "--disorder-seed") p.disorder_seed = std::stoull(next());
             else if (arg == "--correlated-disorder") p.correlated_disorder = true;
+            else if (arg == "--n-planes") p.n_planes = std::stoi(next());
+            else if (arg == "--Ap-plane") p.Ap_plane = std::stof(next());
+            else if (arg == "--rp-plane") p.rp_plane = std::stof(next());
             else if (arg == "--Fdc") p.Fdc = std::stof(next());
             else if (arg == "--Fac") p.Fac = std::stof(next());
             else if (arg == "--freq") p.freq = std::stof(next());
@@ -1157,6 +1258,57 @@ int main(int argc, char** argv) {
                   << " pinning, pins written to pins.dat\n";
     }
 
+    // --- Planar disorder (see the planar-disorder section above) ---
+    PlanarParams planar{};        // all zero: disabled
+    PlanarLog pll{};
+    thrust::device_vector<float> plane_x;   // must outlive the force loop
+    planar.enabled = (p.n_planes > 0 && p.Ap_plane != 0.0f);
+    if (!planar.enabled && (p.n_planes != 0 || p.Ap_plane != 0.0f)) {
+        std::cerr << "Warning: planar disorder needs both --n-planes > 0 and --Ap-plane != 0; "
+                     "running without planes.\n";
+    }
+    if (planar.enabled) {
+        if (p.rp_plane <= 0.0f) {
+            std::cerr << "Error: --rp-plane must be positive.\n";
+            return EXIT_FAILURE;
+        }
+        float rcut_pl = 3.0f * p.rp_plane;
+        if (Lx < 3.0f * rcut_pl) {
+            std::cerr << "Error: the box must be at least 3 plane ranges (9 rp) wide in x; "
+                         "reduce --rp-plane or enlarge the system.\n";
+            return EXIT_FAILURE;
+        }
+
+        std::vector<float> xp(p.n_planes);
+        for (int i = 0; i < p.n_planes; ++i) xp[i] = plane_position(p.disorder_seed, i, Lx);
+        std::sort(xp.begin(), xp.end());
+        plane_x.assign(xp.begin(), xp.end());
+
+        planar.n = p.n_planes;
+        planar.xp = thrust::raw_pointer_cast(plane_x.data());
+        planar.Ap = p.Ap_plane;
+        planar.rp2 = p.rp_plane * p.rp_plane;
+        planar.rcut2 = rcut_pl * rcut_pl;
+
+        // Same well-resolution criterion as for the pins (the 1D force has the
+        // same peak, sqrt(2/e) Ap/rp). Only warn.
+        float fmax = 0.8577639f * fabsf(p.Ap_plane) / p.rp_plane;
+        float dt_max = 0.1f * p.rp_plane / fmax;
+        if (T > 0.0f) dt_max = fminf(dt_max, planar.rp2 / (2.0f * T));
+        if (dt > dt_max) {
+            std::cerr << "Warning: --dt " << dt << " is too large to resolve the planar wells "
+                         "(rp = " << p.rp_plane << ", Ap = " << p.Ap_plane << ", T = " << T
+                      << "); suggested dt <= " << dt_max << ".\n";
+        }
+
+        pll.rp = p.rp_plane;
+        pll.rcut = rcut_pl;
+        pll.dt_max = dt_max;
+        pll.dseed = p.disorder_seed;
+        writePlanes("planes.dat", xp);
+        std::cout << "Planar disorder: " << p.n_planes << " planes x = x_i, written to planes.dat\n";
+    }
+
     // --- External drive (see the driving-force section above) ---
     DriveParams drive{};          // all zero: disabled
     drive.enabled = (p.Fdc != 0.0f || p.Fac != 0.0f);
@@ -1177,6 +1329,7 @@ int main(int argc, char** argv) {
         // Warnings only, like the pinning dt check.
         float fmax_drive = fabsf(p.Fdc) + fabsf(p.Fac);
         float lmin = pin.enabled ? fminf(a0, p.rp) : a0;
+        if (planar.enabled) lmin = fminf(lmin, p.rp_plane);
         if (fmax_drive * dt > 0.1f * lmin) {
             std::cerr << "Warning: the drive moves vortices " << fmax_drive * dt << " per step, more than "
                          "0.1 of the smallest length scale (" << lmin << "); suggested dt <= "
@@ -1225,7 +1378,7 @@ int main(int argc, char** argv) {
         std::cout << "Restarting from " << p.restart_file << " at step " << start_step << "\n";
         checkRestartConsistency(dirName(p.restart_file) + "/simulation.log",
                                 Nmax, a0, k_spring, T, dt, cutoff, skin, p.seed,
-                                pin, p.np, p.rp, drive);
+                                pin, p.np, p.rp, planar, p.rp_plane, p.disorder_seed, drive);
     }
 
     writeSimulationLog(
@@ -1235,7 +1388,7 @@ int main(int argc, char** argv) {
         k_spring, T, dt, steps, cutoff,
         Ncx, Ncy, Ncxy, Nc, cut_offx, cut_offy,
         use_cell_list, skin, cutoff_skin, p.seed,
-        pin, dis, drive, velocity_interval
+        pin, dis, planar, pll, drive, velocity_interval
     );
 
     // --- Allocations ---
@@ -1369,7 +1522,7 @@ int main(int argc, char** argv) {
                 thrust::raw_pointer_cast(where_vortex_is.data()),
                 Nmax, Nxy, Nz, Ncx, Ncy, Ncxy,
                 Lx, Ly, k_spring, cutoff * cutoff, cut_offx, cut_offy,
-                pin
+                pin, planar
             }
         );
 #else
@@ -1385,7 +1538,7 @@ int main(int argc, char** argv) {
                 thrust::raw_pointer_cast(which_vortex_is.data()),
                 thrust::raw_pointer_cast(where_vortex_is.data()),
                 Nmax, Nxy, Nz, Lx, Ly, k_spring, cutoff * cutoff,
-                pin
+                pin, planar
             }
         );
 #endif
