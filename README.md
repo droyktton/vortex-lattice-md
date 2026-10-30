@@ -617,6 +617,7 @@ snapshots) rather than just one:
 | Topological defects: disclinations            | `disclinations.py` | one snapshot (or many)     |
 | Flux-line roughness (wandering vs own mean)   | `roughness.py` | one snapshot (or many)          |
 | Diffusion: MSD vs t, and D                    | `msd.py`       | a trajectory (small `--print-interval`) |
+| Vortex-vortex force distributions P(fx), P(fy) | `forces.py`   | one snapshot (or many)          |
 | Compare a quantity across runs (e.g. vs T)    | `compare.py`   | one `.dat` per run              |
 | All of the above across a temperature sweep   | `tsweep.py`    | just `vortex_sim`; it drives the rest |
 
@@ -810,6 +811,62 @@ drive: `msd.dat` gets `MSD_par MSD_perp` columns, `msd_diffusion.dat` gets
 `D_par D_perp` (from `MSD_i ≈ 2 D_i t`), and `msd.png` shows all three. See
 [External drive](#external-drive).
 
+## Analyze (interaction force distributions)
+
+`forces.py` gives the distributions of the in-plane vortex-vortex force on a
+vortex, `P(fx)`, `P(fy)` and `P(|f|)`, accumulated over all vortices, layers
+and the matched snapshots:
+
+```sh
+python3 forces.py config_step_999.dat
+python3 forces.py "config_step_*.dat" --step-min 1500            # past the transient
+python3 forces.py "config_step_*.dat" --step-min 1500 --bins 201 --fmax 2
+```
+
+Only the repulsion between vortices of the same layer is counted:
+`f_i = Σ_j K1(r_ij)/r_ij (r_i − r_j)` over the `j` within the interaction
+cutoff, with the same core cutoff and minimum image as `main.cu`. The
+springs between layers, pinning, planes and drive are left out. The
+`fx fy` columns of the snapshots can't be used for this, for two reasons:
+they hold the total deterministic force, and they were evaluated at the
+positions *before* the last Langevin step. So the script recomputes the pair
+forces from the positions. The box size and cutoff come from
+`simulation.log` (`--cutoff` overrides the latter).
+
+| Flag                        | Meaning                                          | Default |
+|-----------------------------|--------------------------------------------------|---------|
+| `--step-min`, `--step-max`, `--stride` | which `config_step_*.dat` to use, as in `analyze.py` | all |
+| `--bins`                    | histogram bins                                   | 101     |
+| `--fmax`                    | histogram range `[-fmax, fmax]` (`[0, √2 fmax]` for `|f|`) | largest component |
+| `--cutoff`                  | interaction cutoff                               | from the log |
+| `--out-prefix`, `--show`    | as in `analyze.py`                               |         |
+
+Output, with the prefix as in `analyze.py` (`config_step_999` or
+`avg_step<A>-<B>`):
+
+- `<prefix>_forces.dat`: columns `f P(fx) P(fy)`; the header has the mean,
+  standard deviation and excess kurtosis of each component.
+- `<prefix>_forces_abs.dat`: columns `|f| P(|f|)`.
+- `<prefix>_forces.png`: `P(fx)` and `P(fy)` on a log scale, each with the
+  Gaussian of the same variance.
+- stdout: the same moments, and the largest net pair force in a layer.
+  That force is zero by Newton's third law, so a nonzero value flags a
+  problem.
+
+Notes:
+
+- The cutoff is a hard cut, so a neighbor crossing `r = cutoff` changes
+  the force by `K1(cutoff)` (0.040 for the default 3.0). In a *perfect*
+  lattice with `a0 = 1` there are neighbors at exactly `r = 3`, and the
+  6-decimal rounding of the files puts some inside the cut and their
+  mirror images outside. A perfect `configIni.dat` therefore shows
+  `std(fy) ≈ 0.04` instead of 0. Thermal snapshots are not affected.
+- Checked against the simulation (`--k 0`, no disorder, `--print-interval
+  1`): the `fx fy` of snapshot `s` match the forces recomputed at the
+  positions of snapshot `s − 1`, with a median difference of 2e-6 (the
+  file rounding). In 2 of 120 000 forces, the rounding moved a pair across
+  the cut.
+
 ## Compare across runs
 
 `msd.dat` and `<name>_sq.dat` are both plain two-column (x, y) text files, so
@@ -920,6 +977,7 @@ python3 vizconfig.py config_step_999.dat --show
   (also optionally time-averaged)
 - `roughness.py` — flux-line roughness ⟨u²⟩ (also optionally time-averaged)
 - `msd.py` — mean squared displacement vs time, and the diffusion constant D
+- `forces.py` — distributions of the vortex-vortex force on a vortex, P(fx), P(fy), P(|f|)
 - `compare.py` — overlay a quantity (MSD, S(q), ...) across several runs
 - `velocity.py` — velocity of a driven lattice vs time, and its average
 - `tsweep.py` — run the full pipeline across a temperature sweep (or a
